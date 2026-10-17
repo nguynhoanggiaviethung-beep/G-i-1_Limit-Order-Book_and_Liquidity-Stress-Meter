@@ -1,104 +1,30 @@
 # Limit Order Book và Liquidity Stress Meter
 
-## Chia sẻ và tái lập dữ liệu
+## Trạng thái và phạm vi dữ liệu
 
-GitHub lưu mã nguồn, cấu hình, schema, báo cáo QA và manifest checksum. Dữ liệu thị trường thô và dữ liệu đã xử lý được giữ ngoài Git để repository nhẹ và tải nhanh. Mỗi thành viên tải các file nguồn vào thư mục cục bộ, sau đó chạy cùng pipeline chuẩn hóa và replay.
+Phạm vi dùng để phát triển và kiểm định theo định hướng nghiên cứu là **2025-06-28 đến hết 2025-12-31 UTC**, hai cặp **BTCUSDT và ETHUSDT**, dữ liệu Binance Spot L2 (order book) và giao dịch (trades). Đây là khoảng thời gian yêu cầu; coverage thực tế phụ thuộc những giờ mà nhà cung cấp có file. Không coi dữ liệu đã đầy đủ chỉ vì lệnh tải kết thúc thành công.
 
-File `outputs/manifests/cryptohftdata_qa.json` là manifest checksum tham chiếu cho **đúng bộ dữ liệu CryptoHFTData hiện đang có trên máy chủ dự án**. Manifest ghi đường dẫn tương đối, kích thước và SHA-256 của từng file nguồn. Sau khi tải dữ liệu, chạy `scripts/verify_cryptohftdata_snapshot.py`. Chỉ coi dữ liệu đã khớp khi lệnh xác minh thành công.
+Dữ liệu thô và dữ liệu đã xử lý không được lưu trong Git. GitHub chia sẻ mã nguồn, schema, cấu hình và các báo cáo QA/manifest nhỏ. Mỗi máy chạy Backend cần có dữ liệu cục bộ ở đúng cấu trúc bên dưới. Frontend chỉ gọi API Backend theo hợp đồng; không tự tải, đọc hay dựng lại Parquet.
 
-## Tái tạo đúng bộ dữ liệu hiện có
+> Bộ BTCUSDT ba ngày (2025-06-28–2025-06-30, 132 file) là **smoke test cũ**, không phải bộ nghiên cứu sáu tháng và không đủ cho kết luận nghiên cứu. Manifest checksum hiện có thể vẫn chỉ mô tả bộ mẫu đó cho đến khi data owner hoàn tất và công bố manifest sáu tháng đã kiểm định.
 
-### Phạm vi bộ dữ liệu
+## Quy trình chuẩn cho data owner / Backend
 
-Bộ dữ liệu baseline hiện được ghim trong manifest gồm:
+Các lệnh sau chạy trong Windows PowerShell, từ thư mục gốc repository.
 
-- Nguồn: CryptoHFTData, Binance Spot L2 order book và trades
-- Cặp giao dịch: BTCUSDT
-- Ngày UTC: 2025-06-28, 2025-06-29 và 2025-06-30
-- Số file dự kiến: 132 file, gồm 66 file orderbook và 66 file trades; tổng dung lượng thô khoảng 322,3 MB
-- Kết quả replay dự kiến: 203.459 dòng top-of-book hợp lệ được quan sát theo từng giây
-
-Đây là bộ dữ liệu hiện có để Backend và Frontend tích hợp. Bộ này **chưa đủ phạm vi nghiên cứu** trong `config/default.yaml`: chưa có ETHUSDT và chỉ bao phủ ba ngày. Mục tiêu sáu tháng, hai cặp vẫn là công việc thu thập dữ liệu tiếp theo. Giữ nguyên khoảng thời gian thiếu; không nội suy dữ liệu.
-
-### Các bước trên Windows PowerShell
-
-Với repository đã clone, cập nhật mã nguồn từ thư mục gốc:
+### 1. Lấy mã nguồn và dựng môi trường
 
 ```powershell
 git pull origin main
-```
-
-Với thành viên clone mới:
-
-```powershell
-git clone https://github.com/nguynhoanggiaviethung-beep/G-i-1_Limit-Order-Book_and_Liquidity-Stress-Meter.git
-Set-Location G-i-1_Limit-Order-Book_and_Liquidity-Stress-Meter
-```
-
-Từ thư mục gốc repository, tạo môi trường nếu máy chưa có. Dự án chọn Python 3.11 làm phiên bản mục tiêu:
-
-```powershell
 py -3.11 -m venv .venv
 $PY = ".\.venv\Scripts\python.exe"
 & $PY -m pip install --upgrade pip
 & $PY -m pip install -r requirements.txt
 ```
 
-Nếu đã có `.venv`, bỏ qua lệnh tạo môi trường. Nếu PowerShell không tìm thấy lệnh `py`, hãy cài/chọn Python 3.11 hoặc dùng trực tiếp đường dẫn tới Python 3.11 để tạo `.venv`.
+Nếu `.venv` đã tồn tại thì bỏ qua lệnh tạo môi trường. Dự án yêu cầu Python 3.11; nếu máy không có `py -3.11`, cài Python 3.11 hoặc dùng đúng executable Python 3.11 để tạo môi trường.
 
-Tải đúng phạm vi baseline hiện tại, không tải nhầm toàn bộ mục tiêu sáu tháng:
-
-```powershell
-& $PY scripts/download_cryptohftdata.py `
-  --start 2025-06-28 `
-  --end 2025-06-30 `
-  --symbols BTCUSDT `
-  --data-types orderbook trades
-```
-
-Đối chiếu từng file tải về với SHA-256 đã commit:
-
-```powershell
-& $PY scripts/verify_cryptohftdata_snapshot.py
-```
-
-Chỉ tiếp tục khi lệnh báo đủ **132/132 file khớp**. Sau đó chuẩn hóa Parquet và dựng lại replay:
-
-```powershell
-& $PY scripts/normalize_cryptohftdata.py
-& $PY scripts/audit_cryptohftdata_replay.py
-```
-
-### Vị trí file sau khi tải và xử lý
-
-Downloader lưu file thô tại:
-
-```text
-data_raw/cryptohftdata/binance_spot/YYYY-MM-DD/HH/BTCUSDT_orderbook.parquet
-data_raw/cryptohftdata/binance_spot/YYYY-MM-DD/HH/BTCUSDT_trades.parquet
-data_raw/cryptohftdata/download_manifest.jsonl
-```
-
-Chuẩn hóa tạo dữ liệu trong `data_processed/cryptohftdata/` và cập nhật báo cáo `outputs/manifests/cryptohftdata_qa.json`. Replay tạo:
-
-```text
-data_processed/cryptohftdata/replay/BTCUSDT_book_top_1s.parquet
-outputs/manifests/cryptohftdata_replay_qa.json
-```
-
-Các thư mục dữ liệu này được `.gitignore` loại khỏi Git. Giữ file trên máy mỗi thành viên; không dùng `git add -f` để đưa dữ liệu vào commit. Các báo cáo QA nhỏ được lưu trong Git để nhóm đối chiếu số lượng dòng, sequence gap và coverage. Verifier kiểm tra SHA-256 của file nguồn để xác nhận dữ liệu tải về giống chính xác với baseline.
-
-### Điều kiện xác nhận tái tạo thành công
-
-Verifier phải báo đủ 132 file và kích thước cùng SHA-256 đều khớp. Sau chuẩn hóa, QA cần ghi nhận ba ngày, BTCUSDT, 132 file (66 orderbook và 66 trades) và không có lỗi chuẩn hóa. Sau replay, đối chiếu báo cáo QA và số dòng với baseline đã commit. Hash khớp xác nhận các file nguồn giống hệt nhau; điều đó **không** có nghĩa bộ mẫu ba ngày đã đủ cho toàn bộ nghiên cứu.
-
-Downloader gửi yêu cầu cho đủ 24 giờ mỗi ngày. Manifest baseline chỉ chứa các file nguồn thực sự có trên nhà cung cấp; giờ không có file sẽ được ghi là `missing` trong `download_manifest.jsonl` cục bộ của từng thành viên. Số lượng và checksum trong manifest đã commit xác định baseline cần tái tạo. Downloader có thể chạy tiếp sau khi bị gián đoạn và giới hạn tối đa 55 yêu cầu mỗi phút. API key miễn phí là tùy chọn; nếu nhà cung cấp cấp key, lưu trong biến môi trường cục bộ `CRYPTOHFTDATA_API_KEY`. Không commit key và không gửi key qua chat.
-
-Nếu xác minh checksum thất bại, hãy xem thông báo của verifier và `download_manifest.jsonl`. Không ghi đè manifest tham chiếu chỉ để làm cho lần tải lỗi chuyển thành đạt. Có thể nhà cung cấp đã thay đổi hoặc gỡ file; khi đó cả nhóm cần thống nhất bộ dữ liệu thay thế rồi cập nhật manifest checksum có kiểm soát.
-
-## Mở rộng sang phạm vi nghiên cứu đầy đủ
-
-Phạm vi nghiên cứu dự kiến là 2025-06-28 đến 2025-12-31, gồm BTCUSDT và ETHUSDT. Phạm vi này chưa có trong manifest QA baseline đã commit. Không xem kết quả tải toàn kỳ là baseline dùng chung cho đến khi coverage được kiểm định và manifest checksum mới được rà soát, commit. Khi nhóm thống nhất thu thập kỳ đầy đủ, downloader nhận ngày bắt đầu/kết thúc, symbol và loại dữ liệu như sau:
+### 2. Tải toàn bộ khoảng nghiên cứu
 
 ```powershell
 & $PY scripts/download_cryptohftdata.py `
@@ -108,31 +34,92 @@ Phạm vi nghiên cứu dự kiến là 2025-06-28 đến 2025-12-31, gồm BTCU
   --data-types orderbook trades
 ```
 
-Kiểm tra dung lượng đĩa trước khi chạy. Phạm vi sáu tháng lớn hơn nhiều và có thể thiếu giờ dữ liệu. Ghi coverage thực tế theo từng symbol và loại dữ liệu; không suy luận rằng dữ liệu liên tục chỉ từ ngày bắt đầu và kết thúc được yêu cầu.
+Downloader có thể chạy nhiều giờ, giới hạn tốc độ và tiếp tục được sau khi gián đoạn. Cần dung lượng trống đáng kể; không commit `data_raw/`. Chờ tiến trình kết thúc, rồi xem `data_raw/cryptohftdata/download_manifest.jsonl`: phân biệt rõ `downloaded`, `missing` và `error`. File bị nhà cung cấp thiếu không được tự tạo hoặc nội suy.
 
-## Pilot đối chiếu Tardis riêng biệt
+### 3. Chuẩn hóa và kiểm tra nguồn
 
-Pilot Tardis ngày 2025-01-01 là bộ dữ liệu đối chiếu riêng. Không trộn pilot này vào baseline nghiên cứu CryptoHFTData. `outputs/manifests/source_log.json` lưu hash của các file pilot hiện có trên máy chủ dự án, nhưng downloader CryptoHFTData không tải các file Tardis đó. Thành viên cần tái tạo pilot phải lấy riêng đúng các file này và xác minh hash theo source log.
+```powershell
+& $PY scripts/normalize_cryptohftdata.py
+```
 
-## Chi tiết xử lý và giới hạn
+Nguồn lưu tại `data_raw/cryptohftdata/binance_spot/YYYY-MM-DD/HH/`. Pipeline chuẩn hóa ghi vào `data_processed/cryptohftdata/` và tạo QA/checksum tại `outputs/manifests/cryptohftdata_qa.json`. Rà QA theo ngày, symbol, loại dữ liệu, số file, lỗi schema và SHA-256; đối chiếu với `download_manifest.jsonl`. Việc chuẩn hóa **cập nhật file QA manifest đã theo dõi trong Git**: data owner phải review coverage và checksum trước khi commit manifest mới. Không thay manifest tham chiếu bằng một lần tải chưa kiểm định.
 
-Các dòng CryptoHFTData dùng `received_time` đơn vị nanosecond, `event_type` (`snapshot`/`update`), Binance update ID và khối lượng level tuyệt đối. Adapter cần:
+Khi data owner đã commit manifest đầy đủ, các thành viên khác chạy:
 
-1. Đọc từng file Parquet bằng PyArrow.
-2. Khởi tạo book từ snapshot đầy đủ, áp dụng update theo sequence và đánh dấu book không hợp lệ sau gap cho đến khi có snapshot mới.
-3. Chỉ chuyển trạng thái qua ranh giới file khi sequence liên tục đã được xác nhận. Một số giờ không có snapshot bên trong file.
-4. Diễn giải phía chủ động của giao dịch theo `is_buyer_maker`: `true` là bên bán chủ động; `false` là bên mua chủ động.
-5. Ghi giờ thiếu, sequence không hợp lệ, tuổi snapshot và hash file vào QA; không điền các khoảng thiếu bằng quan sát tự tạo.
+```powershell
+& $PY scripts/verify_cryptohftdata_snapshot.py
+```
 
-Các file mẫu trong `data_raw/cryptohftdata_sample/` chỉ dùng để kiểm tra định dạng, không đại diện cho mẫu nghiên cứu. Không dùng chúng để huấn luyện mô hình. Muốn đủ điều kiện nghiên cứu vẫn cần coverage đã thống nhất, replay có xử lý sequence, chia train/validation/test theo thời gian và chỉ fit nhãn/ngưỡng trên tập train.
+Lệnh xác minh phải thành công với manifest của bộ dữ liệu đã được nhóm duyệt. Manifest cũ 132 file chỉ xác minh bộ smoke test; nó không chứng minh coverage sáu tháng. Không dùng `--allow-extra` để tuyên bố dữ liệu đầy đủ: tùy chọn đó chỉ cho phép file ngoài tập hash tham chiếu.
 
-## Hợp đồng Backend
+### 4. Replay riêng từng symbol
 
-- Cấu hình: `config/default.yaml`
-- Từ điển dữ liệu và quy tắc xử lý: `docs/data_dictionary.csv`, `docs/data_contract.md`
-- Schema replay snapshot: `schemas/replay_snapshot.v1.example.json`
-- Response khi chưa có model: `schemas/predict_unavailable.v1.example.json`
-- Pipeline dữ liệu: `scripts/download_cryptohftdata.py`, `scripts/verify_cryptohftdata_snapshot.py`, `scripts/normalize_cryptohftdata.py`, `scripts/audit_cryptohftdata_replay.py`
-- Script pilot cũ: `scripts/prepare_backend_pilot.py`, `scripts/compare_quotes.py`, `scripts/compare_quotes_eth.py`
+Không replay BTCUSDT và ETHUSDT trong cùng một book. Chạy riêng để trạng thái order book, sequence ID, output và QA không trộn lẫn:
 
-Timestamp API dùng ISO-8601 UTC; giá và khối lượng dùng chuỗi decimal; giá trị chưa có trả về `null` kèm trạng thái. Không trả dự báo cũ hoặc xác suất tự đặt khi chưa có model artifact.
+```powershell
+& $PY scripts/audit_cryptohftdata_replay.py `
+  --symbol BTCUSDT `
+  --output data_processed/cryptohftdata/replay `
+  --qa outputs/manifests/cryptohftdata_replay_BTCUSDT_qa.json
+
+& $PY scripts/audit_cryptohftdata_replay.py `
+  --symbol ETHUSDT `
+  --output data_processed/cryptohftdata/replay `
+  --qa outputs/manifests/cryptohftdata_replay_ETHUSDT_qa.json
+```
+
+Replay chỉ xuất các giây có top-of-book hợp lệ và không lấp khoảng trống. Kiểm tra `observed_dates_utc`, `invalid_intervals`, `sequence_gaps`, `snapshot_recoveries` và thời điểm bắt đầu/kết thúc trong từng QA. Kết quả là top-of-book 1 giây, chưa phải bộ feature/label cuối cùng và cũng chưa đủ để tuyên bố dữ liệu nghiên cứu hoàn chỉnh. Cần xử lý full-depth features, nhãn, chia tập theo thời gian và kiểm soát leakage theo code plan trước khi huấn luyện/đánh giá mô hình.
+
+### 5. Bàn giao cho Frontend và các thành viên khác
+
+- Data owner/Backend gửi lên Git **code, schema, cấu hình, QA manifest đã duyệt**, không gửi Parquet/CSV dữ liệu thô.
+- Sau `git pull`, máy chạy Backend tải dữ liệu theo đúng phạm vi đã chốt, xác minh checksum và chạy pipeline như trên. `git pull` không tải dữ liệu thị trường.
+- Backend đọc file cục bộ dưới `data_processed/` và phục vụ API. Frontend dùng các endpoint/schema trong `schemas/`; Frontend không cần quyền truy cập `data_raw/`.
+- Backend không trả dự báo giả hoặc dữ liệu cũ khi chưa có model/output hợp lệ; giữ trạng thái thiếu dữ liệu và lỗi QA trong API response.
+
+## Cấu trúc dữ liệu cục bộ
+
+```text
+data_raw/cryptohftdata/binance_spot/YYYY-MM-DD/HH/{BTCUSDT,ETHUSDT}_{orderbook,trades}.parquet
+data_raw/cryptohftdata/download_manifest.jsonl
+data_processed/cryptohftdata/...
+data_processed/cryptohftdata/replay/BTCUSDT_book_top_1s.parquet
+data_processed/cryptohftdata/replay/ETHUSDT_book_top_1s.parquet
+outputs/manifests/cryptohftdata_qa.json
+outputs/manifests/cryptohftdata_replay_BTCUSDT_qa.json
+outputs/manifests/cryptohftdata_replay_ETHUSDT_qa.json
+```
+
+Các thư mục raw/processed bị `.gitignore` loại khỏi Git. Không dùng `git add -f` để đưa dữ liệu lớn vào commit.
+
+## Smoke test nhanh (không thay thế dữ liệu nghiên cứu)
+
+Nếu chỉ muốn thử downloader và pipeline trước, tải đúng ba ngày BTCUSDT:
+
+```powershell
+& $PY scripts/download_cryptohftdata.py `
+  --start 2025-06-28 `
+  --end 2025-06-30 `
+  --symbols BTCUSDT `
+  --data-types orderbook trades
+& $PY scripts/verify_cryptohftdata_snapshot.py
+& $PY scripts/normalize_cryptohftdata.py
+& $PY scripts/audit_cryptohftdata_replay.py --symbol BTCUSDT
+```
+
+Baseline smoke test tham chiếu có 132 file nguồn (66 orderbook, 66 trades), khoảng 322,3 MB và 203.459 giây top-of-book hợp lệ trong replay đã ghi nhận. Khoảng này có sequence gap chưa phục hồi ở cuối dữ liệu; con số chỉ mô tả snapshot baseline, không phải cam kết lần tải mới luôn cho đúng cùng số dòng.
+
+## Pilot Tardis riêng biệt
+
+Pilot Tardis ngày 2025-01-01 là nguồn đối chiếu riêng; không trộn vào phạm vi nghiên cứu CryptoHFTData. `outputs/manifests/source_log.json` ghi hash các file pilot đã có trong snapshot dự án. Downloader CryptoHFTData không tải pilot Tardis.
+
+## Quy tắc dữ liệu và hợp đồng Backend
+
+- Cấu hình: `config/default.yaml`.
+- Từ điển và quy tắc xử lý: `docs/data_dictionary.csv`, `docs/data_contract.md`.
+- Schema replay: `schemas/replay_snapshot.v1.example.json`.
+- Response khi chưa có model: `schemas/predict_unavailable.v1.example.json`.
+- Pipeline: `scripts/download_cryptohftdata.py`, `scripts/verify_cryptohftdata_snapshot.py`, `scripts/normalize_cryptohftdata.py`, `scripts/audit_cryptohftdata_replay.py`.
+- Dùng timestamp ISO-8601 UTC; giá/khối lượng dạng decimal; giá trị không có trả `null` kèm trạng thái.
+- CryptoHFTData dùng `received_time` nanosecond, snapshot/update Binance và update ID. Khi sequence gap xuất hiện, book không hợp lệ cho đến snapshot hoàn chỉnh mới. Giao dịch diễn giải qua `is_buyer_maker`: `true` là bên bán chủ động, `false` là bên mua chủ động.
+- File mẫu trong `data_raw/cryptohftdata_sample/` chỉ kiểm tra định dạng, không đại diện mẫu nghiên cứu và không dùng huấn luyện.

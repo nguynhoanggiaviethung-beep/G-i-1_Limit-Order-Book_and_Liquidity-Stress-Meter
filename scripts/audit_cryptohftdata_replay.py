@@ -50,11 +50,19 @@ def main() -> None:
     parser.add_argument("--normalized", default=str(DEFAULT_NORMALIZED))
     parser.add_argument("--output", default=str(DEFAULT_OUT))
     parser.add_argument("--qa", default=str(DEFAULT_QA))
+    parser.add_argument("--symbol", choices=("BTCUSDT", "ETHUSDT"),
+        help="Replay one symbol. Required when normalized files contain multiple symbols.")
     args = parser.parse_args()
     normalized, out, qa_path = Path(args.normalized), Path(args.output), Path(args.qa)
     paths = sorted(normalized.glob("2025-*/[0-2][0-9]/*_orderbook.parquet"))
+    available_symbols = sorted({path.name.split("_")[0] for path in paths})
+    if args.symbol:
+        paths = [path for path in paths if path.name.startswith(f"{args.symbol}_")]
+    elif len(available_symbols) > 1:
+        raise SystemExit("Multiple symbols found. Run once per symbol with --symbol BTCUSDT or --symbol ETHUSDT.")
     if not paths:
-        raise SystemExit(f"No normalized order book files found under {normalized}")
+        suffix = f" for {args.symbol}" if args.symbol else ""
+        raise SystemExit(f"No normalized order book files found{suffix} under {normalized}")
 
     book = {"bid": {}, "ask": {}}
     heap = {"bid": [], "ask": []}
@@ -178,13 +186,14 @@ def main() -> None:
         "valid_time_end_utc": ordered[-1]["timestamp_utc"] if ordered else None,
         "valid_seconds_with_missing_intervals_not_filled": len(ordered),
         "output_timestamp_regressions_after_second_sort": sum(a > b for a,b in zip(timestamps,timestamps[1:])),
+        "observed_dates_utc": sorted({path.parent.parent.name for path in paths}),
         "counters": counters, "invalid_intervals": invalid_intervals,
         "assessment": {"replayable_until_sequence_gap": True,
             "full_downloaded_span_reconstructable": not any(i.get("status") == "unresolved_at_end_of_downloaded_data" for i in invalid_intervals),
             "backend_can_continue_event_ingestion_and_replay_code": True,
             "backend_can_claim_complete_research_dataset": False,
-            "reasons": ["Only BTCUSDT and three calendar dates were downloaded.",
-                "The downloaded span has an unresolved book sequence gap if no later complete snapshot appears.",
+            "reasons": [f"This replay covers {len({path.parent.parent.name for path in paths})} observed UTC date(s) for {symbol}; compare them with the configured study window.",
+                "Any unresolved sequence gap remains invalid through the end of the downloaded data; no observations were fabricated.",
                 "This output contains valid 1-second top-of-book rows only; it does not yet include the study's full depth features, labels, or leakage-safe splits."]}}
     qa_path.parent.mkdir(parents=True, exist_ok=True)
     qa_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
