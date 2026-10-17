@@ -1,0 +1,12 @@
+requests>=2.32,<3
+pandas>=2.2,<3
+pyarrow>=17,<25
+PyYAML>=6,<7
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+pydantic>=2.9,<3
+scikit-learn>=1.5,<2
+arch>=7,<8
+pytest>=8,<9
+httpx>=0.27,<1
+websockets>=12,<18

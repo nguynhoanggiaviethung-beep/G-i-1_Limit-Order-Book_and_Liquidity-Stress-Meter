@@ -1,0 +1,24 @@
+# Research defaults from the backend code plan.
+symbols:
+  - BTCUSDT
+  - ETHUSDT
+interval: 5m
+start_date: '2019-01-01'
+data:
+  directory: data
+binance:
+  base_url: https://api.binance.com
+  timeout_seconds: 20
+  retries: 5
+auto_sync:
+  enabled: true
+  interval_seconds: 300
+  # Wait briefly after each 5-minute boundary so Binance closes the candle.
+  grace_seconds: 10
+forecast:
+  horizon_days: 1
+  test_fraction: 0.2
+risk:
+  confidence_levels:
+    - 0.95
+    - 0.99

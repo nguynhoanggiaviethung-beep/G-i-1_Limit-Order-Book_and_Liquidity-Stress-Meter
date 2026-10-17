@@ -1,11 +1,19 @@
+# Local data and secrets
+data/raw/
+data/processed/
+data/features/
+data/external/
 .env
-.venv/
+.env.*
+!.env.example
+*.pem
+*.key
+backend/.env
+backend/artifacts/*
+!backend/artifacts/.gitkeep
+results/metrics/auto_sync_status.json
+*.log
 __pycache__/
 *.py[cod]
-
-## Market data stays local; download/recreate with scripts.
-data_raw/
-data_processed/
-data_verify/
-*.parquet
-*.csv.gz
+.pytest_cache/
+.venv/

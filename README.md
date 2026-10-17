@@ -123,3 +123,37 @@ Pilot Tardis ngày 2025-01-01 là nguồn đối chiếu riêng; không trộn v
 - Dùng timestamp ISO-8601 UTC; giá/khối lượng dạng decimal; giá trị không có trả `null` kèm trạng thái.
 - CryptoHFTData dùng `received_time` nanosecond, snapshot/update Binance và update ID. Khi sequence gap xuất hiện, book không hợp lệ cho đến snapshot hoàn chỉnh mới. Giao dịch diễn giải qua `is_buyer_maker`: `true` là bên bán chủ động, `false` là bên mua chủ động.
 - File mẫu trong `data_raw/cryptohftdata_sample/` chỉ kiểm tra định dạng, không đại diện mẫu nghiên cứu và không dùng huấn luyện.
+
+## Backend nghiên cứu Crypto Volatility & Tail Risk
+
+Backend nghiên cứu được đặt trong `backend/` theo code plan: Binance Spot public API → đồng bộ Parquet → validation → features → models/evaluation → FastAPI. Nến 5 phút cho BTCUSDT và ETHUSDT được cấu hình từ `config/settings.yaml`, với ngày bắt đầu mặc định 2019-01-01. Endpoint market data công khai không cần API key.
+
+Trong PowerShell, từ thư mục repository:
+
+```powershell
+py -3.11 -m venv .venv
+$PY = ".\.venv\Scripts\python.exe"
+& $PY -m pip install -r backend\requirements.txt
+& $PY backend\scripts\sync_data.py
+& $PY backend\scripts\validate_data.py
+& $PY backend\scripts\build_features.py
+& $PY backend\scripts\train_models.py
+& $PY -m uvicorn app.main:app --app-dir backend --reload
+```
+
+Trong terminal PowerShell khác, lấy dự báo GARCH 1 ngày:
+
+```powershell
+$body = @{ symbol = "BTCUSDT"; horizon_minutes = 1440; confidence_levels = @(0.95, 0.99); model = "garch" } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/forecasts -ContentType "application/json" -Body $body
+```
+
+Lần chạy đầu tải lịch sử từ ngày cấu hình; các lần chạy sau nối dữ liệu từ nến cuối và hợp nhất theo khóa symbol, interval, open time. Dữ liệu gốc và chuẩn hóa nằm trong `data/raw/` và `data/processed/`; feature RV theo ngày nằm trong `data/features/`. `validate_data.py` ghi coverage và các khoảng thiếu vào `results/metrics/data_quality.json`. `train_models.py` dùng feature RV tại cùng mốc giờ UTC mỗi ngày để dự báo RV trọn ngày kế tiếp; script đánh giá rolling-mean, HAR-RV và Random Forest trên 20% cuối theo thời gian, fit GARCH(1,1) cho RV, VaR và ES. Forecast mới nhất nằm trong `results/forecasts/latest_forecasts.json`; chỉ số ngoài mẫu nằm trong `results/metrics/volatility_backtest.json`. Các tệp dữ liệu cục bộ bị Git bỏ qua. FastAPI cung cấp `/health` và dữ liệu đã lưu qua `/api/v1/market-data/{symbol}`. POST `/api/v1/forecasts` trả dự báo đã tính, GET `/api/v1/evaluation/{symbol}` trả chỉ số ngoài mẫu; horizon hiện hỗ trợ là 1 ngày (1440 phút).
+
+Khi FastAPI đang chạy, tự động đồng bộ Binance được bật mặc định: server đồng bộ ngay khi khởi động, sau đó canh mỗi 5 phút và chờ thêm 10 giây để nến vừa đóng sẵn sàng. Quá trình cập nhật cả dữ liệu Parquet lẫn feature RV theo ngày. Xem tình trạng lần đồng bộ gần nhất tại `http://127.0.0.1:8000/api/v1/sync-status`; xem lịch sử nến đã đóng tại `http://127.0.0.1:8000/api/v1/market-data/BTCUSDT?limit=10`.
+
+Giá và nến đang hình thành được nhận riêng qua Binance Spot WebSocket, với cập nhật thường xuyên trong lúc cây nến 5 phút còn mở. Xem BTC tại `http://127.0.0.1:8000/api/v1/live-market-data/BTCUSDT` hoặc cả hai cặp tại `http://127.0.0.1:8000/api/v1/live-market-data`. Trường `candle.price` là giá gần nhất; `candle.is_closed` cho biết nến đã hoàn tất chưa; `last_message_at_utc` giúp kiểm tra luồng còn nhận dữ liệu. Nếu kết nối bị ngắt, backend tự thử kết nối lại. Giữ cửa sổ chạy Uvicorn mở để luồng live và lịch đồng bộ tiếp tục hoạt động. Việc đồng bộ không tự huấn luyện lại các mô hình; chạy `train_models.py` khi muốn làm mới dự báo và đánh giá.
+
+
+
+
