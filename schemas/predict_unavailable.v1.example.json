@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0",
+  "symbol": "BTCUSDT",
+  "timestamp": "2025-01-01T00:00:01Z",
+  "horizon_seconds": 5,
+  "data_mode": "historical_replay",
+  "data_status": "valid",
+  "price_direction": {
+    "status": "unavailable",
+    "predicted_class": null,
+    "probabilities": null,
+    "model_version": null
+  },
+  "liquidity_stress": {
+    "status": "unavailable",
+    "probability": null,
+    "classification_threshold": null,
+    "predicted_class": null,
+    "model_version": null
+  }
+}

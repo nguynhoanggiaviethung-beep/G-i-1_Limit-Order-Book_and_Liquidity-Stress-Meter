@@ -2,3 +2,10 @@
 .venv/
 __pycache__/
 *.py[cod]
+
+## Market data stays local; download/recreate with scripts.
+data_raw/
+data_processed/
+data_verify/
+*.parquet
+*.csv.gz

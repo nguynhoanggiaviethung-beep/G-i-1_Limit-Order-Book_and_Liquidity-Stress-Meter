@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.0",
+  "source": "Tardis.dev historical data",
+  "exchange": "Binance Spot",
+  "date_utc": "2025-01-01",
+  "symbols": {
+    "BTCUSDT": [
+      {
+        "file": "data_raw/binance_incremental_book_L2_2025-01-01_BTCUSDT.csv.gz",
+        "bytes": 106042549,
+        "sha256": "247ffe94826edd6a1def0b9e2801716b33c7e4d25976c0a3abc9549c49884be6"
+      },
+      {
+        "file": "data_raw/binance_trades_2025-01-01_BTCUSDT.csv.gz",
+        "bytes": 12827976,
+        "sha256": "d0d9ba2575712e6ffce196c722c2c3beadf881763a55149b4c036d76fb96ed85"
+      },
+      {
+        "file": "data_verify/binance_quotes_2025-01-01_BTCUSDT.csv.gz",
+        "bytes": 7983026,
+        "sha256": "390dcd68fd0ca854436305575b48edae7425bfc50c5b38ac1afa3100f0a677c6"
+      }
+    ],
+    "ETHUSDT": [
+      {
+        "file": "data_raw/binance_incremental_book_L2_2025-01-01_ETHUSDT.csv.gz",
+        "bytes": 97213890,
+        "sha256": "06e8502c696604e884b9ff6a2b339e08402af44f0416fa69c614add8874ab670"
+      },
+      {
+        "file": "data_raw/binance_trades_2025-01-01_ETHUSDT.csv.gz",
+        "bytes": 10018120,
+        "sha256": "cfecfce134edebf27b29ee3fe9ef812937c9971c2e6cecf56d3bb1185f228ac7"
+      },
+      {
+        "file": "data_verify/binance_quotes_2025-01-01_ETHUSDT.csv.gz",
+        "bytes": 8547686,
+        "sha256": "b12066290b8d5e1c9ab4c7de106582968eff892c2efc698f332d2c5b5ab2748c"
+      }
+    ]
+  },
+  "processing_script": "scripts/prepare_backend_pilot.py"
+}
