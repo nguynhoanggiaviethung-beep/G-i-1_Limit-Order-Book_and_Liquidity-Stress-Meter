@@ -1,7 +1,6 @@
-"""Time ordered machine learning model helpers."""
+"""Compatibility exports for time-ordered machine-learning models."""
 
-from sklearn.ensemble import RandomForestRegressor
+from app.models.ml_linear import make_elasticnet
+from app.models.ml_trees import make_lightgbm, make_random_forest, make_xgboost
 
-
-def make_random_forest(random_state: int = 42) -> RandomForestRegressor:
-    return RandomForestRegressor(n_estimators=300, min_samples_leaf=5, random_state=random_state, n_jobs=-1)
+__all__ = ["make_elasticnet", "make_lightgbm", "make_random_forest", "make_xgboost"]

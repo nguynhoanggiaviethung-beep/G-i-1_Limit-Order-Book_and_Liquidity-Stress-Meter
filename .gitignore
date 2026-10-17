@@ -2,6 +2,7 @@
 data/raw/
 data/processed/
 data/features/
+data/snapshots/
 data/external/
 .env
 .env.*

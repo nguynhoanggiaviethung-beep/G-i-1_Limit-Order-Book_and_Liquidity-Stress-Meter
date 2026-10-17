@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 
-from app.api.routes import evaluation, forecasts, health, live_market_data, market_data, sync
+from app.api.routes import evaluation, forecasts, health, live_market_data, market_data, regimes, sync
 from app.core.config import load_settings
 from app.core.logging import configure_logging
 from app.services.auto_sync_service import AutoSyncService
@@ -43,6 +43,7 @@ app.include_router(forecasts.router)
 app.include_router(evaluation.router)
 app.include_router(sync.router)
 app.include_router(live_market_data.router)
+app.include_router(regimes.router)
 
 
 @app.get("/", include_in_schema=False)

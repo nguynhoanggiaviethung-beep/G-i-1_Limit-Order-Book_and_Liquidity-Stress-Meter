@@ -1,5 +1,24 @@
 # Limit Order Book và Liquidity Stress Meter
 
+## Crypto volatility / tail-risk backend (Code Plan v3)
+
+The current backend also implements the frozen crypto volatility and tail-risk study for Binance Spot **BTCUSDT** and **ETHUSDT**, using 5-minute candles and direct 1/7/30-day forecasts. Research is frozen at `2026-09-30T23:59:59Z`; the live 5-minute updater is a separate input stream and does not mutate a frozen snapshot. See [research_design.md](docs/research_design.md) and [data_dictionary.md](docs/data_dictionary.md) for definitions and limits.
+
+Run from the repository root in PowerShell after installing `backend/requirements.txt` in `.venv`:
+
+```powershell
+$PY = ".\.venv\Scripts\python.exe"
+& $PY backend\scripts\freeze_snapshot.py
+& $PY backend\scripts\validate_data.py
+& $PY backend\scripts\build_features.py
+& $PY backend\scripts\run_walkforward.py
+& $PY backend\scripts\make_report_tables.py
+& $PY backend\scripts\run_risk_eval.py
+& $PY -m uvicorn app.main:app --app-dir backend --reload
+```
+
+The API docs are at `http://127.0.0.1:8000/docs`. A research forecast request uses `symbol`, `horizon_days` (`1`, `7`, or `30`), and a saved `model` (for example `random_walk` or `har`). See `/api/v1/forecasts`, `/api/v1/evaluation/{symbol}`, and `/api/v1/regimes/{symbol}`. Forecasts and metrics must be generated locally from the snapshot before these read endpoints return results.
+
 ## Trạng thái và phạm vi dữ liệu
 
 Phạm vi dùng để phát triển và kiểm định theo định hướng nghiên cứu là **2025-06-28 đến hết 2025-12-31 UTC**, hai cặp **BTCUSDT và ETHUSDT**, dữ liệu Binance Spot L2 (order book) và giao dịch (trades). Đây là khoảng thời gian yêu cầu; coverage thực tế phụ thuộc những giờ mà nhà cung cấp có file. Không coi dữ liệu đã đầy đủ chỉ vì lệnh tải kết thúc thành công.

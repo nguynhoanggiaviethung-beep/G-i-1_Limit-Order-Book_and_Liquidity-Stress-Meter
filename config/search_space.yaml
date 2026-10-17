@@ -1,0 +1,19 @@
+# Frozen, compact tuning space. Selection uses validation data only.
+elasticnet:
+  alpha: [0.0001, 0.001, 0.01, 0.1, 1.0]
+  l1_ratio: [0.1, 0.5, 0.9, 1.0]
+random_forest:
+  n_estimators: [300, 600]
+  max_depth: [4, 8, null]
+  min_samples_leaf: [5, 15, 30]
+  max_features: [0.7, 1.0]
+lightgbm:
+  n_estimators: [300, 600]
+  learning_rate: [0.02, 0.05]
+  num_leaves: [7, 15, 31]
+  min_child_samples: [20, 50]
+xgboost:
+  n_estimators: [300, 600]
+  learning_rate: [0.02, 0.05]
+  max_depth: [2, 4]
+  min_child_weight: [10, 30]

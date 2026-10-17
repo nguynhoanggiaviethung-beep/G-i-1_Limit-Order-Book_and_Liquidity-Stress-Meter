@@ -1,0 +1,85 @@
+# Frozen research design from Code Plan v3. Do not change after OOS evaluation.
+as_of_utc: "2026-09-30T23:59:59Z"
+symbols: [BTCUSDT, ETHUSDT]
+sampling:
+  intraday: 5m
+  bars_per_day: 288
+  day_timezone: UTC
+forecast_origin: "00:00:00Z"
+horizons_days: [1, 7, 30]
+primary_horizon: 1
+rv_windows:
+  daily: 1
+  weekly: 7
+  monthly: 30
+robustness_rv_windows:
+  weekly: 5
+  monthly: 22
+windows:
+  first_train_start: "2019-01-01"
+  initial_train_end: "2022-12-31"
+  validation_start: "2023-01-01"
+  validation_end: "2023-12-31"
+  oos_start: "2024-01-01"
+  oos_end: as_of
+  scheme: expanding
+  rolling_robustness_days: [1000, 1500]
+refit_every_days:
+  benchmark: 1
+  garch: 7
+  har: 7
+  linear_ml: 7
+  trees: 30
+  quantile: 30
+  dl: 30
+tuning:
+  cv: purged_ts
+  folds: 5
+  embargo_days: 29
+  retune_every_days: 90
+evaluation:
+  loss_rv: qlike
+  loss_risk: fz0
+  hac_lags:
+    1: 5
+    7: 6
+    30: 29
+  dm_small_sample: hln
+  mcs:
+    alpha: 0.10
+    bootstrap: 5000
+    block:
+      1: 5
+      7: 10
+      30: 30
+risk:
+  confidence: [0.95, 0.975, 0.99]
+  methods: [param_normal, param_t, param_skewt, fhs, evt, quantile]
+  fhs_window: 750
+  fhs_paths: 10000
+  evt:
+    threshold_quantile: 0.90
+    min_exceedances: 30
+  backtest_h_gt_1: non_overlapping
+  min_exceedances_warn: 10
+regimes:
+  bull_drawdown_90d_floor: -0.10
+  bear_drawdown_365d_floor: -0.30
+  stress_rv_quantile: 0.95
+  stress_rv_window_days: 365
+  stress_daily_return_floor: -10.0
+  priority: [stress, bear, bull]
+  events:
+    - "2020-03-12"
+    - "2021-05-19"
+    - "2022-05-01"
+    - "2022-11-01"
+    - "2024-08-05"
+models:
+  benchmark: [random_walk, rolling_mean_7, rolling_mean_30, ewma_094]
+  har: [har, har_log, har_j, har_cj, shar, harq]
+  garch: [garch_t, gjr_t, egarch_t, garch_skewt]
+  ml: [elasticnet, random_forest, lightgbm_l2, lightgbm_qlike, xgboost]
+  quantile: [linear_qr, lightgbm_quantile, qrf]
+  dl: [lstm, gru, transformer]
+seed: 20260930

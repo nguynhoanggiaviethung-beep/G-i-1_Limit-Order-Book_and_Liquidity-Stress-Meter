@@ -1,4 +1,4 @@
-"""Routes for the latest forecasts saved by the model training script."""
+"""Routes for saved direct-horizon research forecasts."""
 
 from fastapi import APIRouter, HTTPException
 
@@ -11,7 +11,7 @@ router = APIRouter(prefix="/api/v1/forecasts", tags=["forecasts"])
 @router.post("")
 def create_forecast(request: ForecastRequest):
     try:
-        return load_forecast(request.symbol, request.model, request.horizon_minutes, request.confidence_levels)
+        return load_forecast(request.symbol, request.model, request.horizon_days, request.confidence_levels)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

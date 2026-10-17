@@ -1,26 +1,26 @@
-# Data dictionary
+# Research data dictionary
 
-## Source and scope
+| Field | Meaning | Availability / use |
+|---|---|---|
+| `open_time`, `close_time` | Binance Spot candle interval timestamps (UTC) | Raw 5-minute source |
+| `utc_date` | UTC calendar date of candle | Daily aggregation key |
+| `n_bars`, `n_obs` | Candle count and valid adjacent close-to-close returns | Complete day requires both to equal 288 |
+| `is_complete_day` | All expected bars and returns are present | Only complete days enter RV targets |
+| `rv`, `realized_variance` | Sum of squared 5-minute log returns | Daily target and predictors |
+| `rv_partial` | Sum of observed squared returns on an incomplete day | Diagnostic only; never modeled |
+| `bpv` | Bipower variation estimate | Jump-robust variation feature |
+| `jump` | Positive part of RV minus BPV | Jump variation component |
+| `rs_pos`, `rs_neg` | Positive/negative realized semivariances | Asymmetric variation predictors |
+| `rq` | Realized quarticity estimate | HARQ adjustment input |
+| `close_ret` | Sum of daily intraday log returns | Return target and EWMA input |
+| `available_at_utc` | UTC midnight after the date's close | Enforces point-in-time eligibility |
+| `rv_mean_7`, `rv_mean_30` | Trailing mean RV windows | HAR predictors, known at origin |
+| `target_start`, `target_end` | Direct forecast interval, end exclusive | Next h full UTC days |
+| `actual_rv_mean` | Mean daily RV across target interval | Missing if target is incomplete/unavailable |
+| `y_cum_return` | Sum of daily log returns over target interval | Separate economic downside outcome |
+| `rv_forecast` | Predicted mean RV for direct horizon h | Main forecast output |
+| `sigma_h_approx` | Approximate cumulative return sigma from estimated kappa and h-day RV | Risk scaling input; not a full tail distribution |
+| `data_version` | Hash binding snapshot data and frozen configs | Reproducibility identifier |
+| `config_hash` | SHA-256 of research design config | Reproducibility identifier |
 
-Binance Spot public klines for `BTCUSDT` and `ETHUSDT`, on 5-minute intervals by default. Public market data requires no API key. Timestamps are stored in UTC. The research start date is configurable; the current default is 2019-01-01.
-
-## Normalized candle fields
-
-| Field | Meaning | Unit / rule |
-| --- | --- | --- |
-| `symbol` | Trading pair | `BTCUSDT` or `ETHUSDT` |
-| `interval` | Kline interval | `5m` by default |
-| `open_time` | Candle opening time | UTC, unique with symbol and interval |
-| `close_time` | Candle closing time | UTC |
-| `open`, `high`, `low`, `close` | OHLC prices | Numeric; close must be positive; high/low must bound open and close |
-| `volume` | Base asset traded | Numeric and non-negative |
-| `quote_volume` | Quote asset traded | Numeric and non-negative |
-| `number_of_trades` | Trades in candle | Integer-valued numeric field |
-| `taker_buy_base_volume` | Aggressive buy volume in base asset | Numeric |
-| `taker_buy_quote_volume` | Aggressive buy volume in quote asset | Numeric |
-
-Raw API fields are retained in `data/raw/`; normalized closed candles are written to `data/processed/`. Features are kept separately under `data/features/`. Missing intervals are reported and never filled or backfilled.
-
-## Initial features
-
-`log_return` is `100 * ln(close_t / close_(t-1))`, in percentage points. Daily realized variance is the sum of squared 5-minute log returns; daily realized volatility is its square root. The first return in each symbol series is undefined and excluded from RV.
+All daily features are computed from the immutable snapshot under `data/snapshots/<as-of>/`. Forecast outputs are Parquet under `results/forecasts/` and include model status; rows with a non-`ok` status must not be treated as predictions.
