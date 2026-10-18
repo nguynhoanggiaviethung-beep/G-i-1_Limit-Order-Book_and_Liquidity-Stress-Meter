@@ -247,6 +247,50 @@ def main() -> None:
                                 f"{type(exc).__name__}: {exc}"
                             )
 
+    quantile_path = forecast_dir / "quantile_forecasts.parquet"
+    if quantile_path.exists():
+        quantile_frame = pd.read_parquet(quantile_path)
+        for symbol in symbols:
+            for horizon in horizons:
+                selected = quantile_frame.loc[
+                    quantile_frame["symbol"].eq(symbol)
+                    & quantile_frame["horizon_days"].eq(int(horizon))
+                    & quantile_frame["status"].eq("ok")
+                ]
+                if model_filter:
+                    selected = selected.loc[selected["model"].isin(model_filter)]
+                if args.last_origins is not None and not selected.empty:
+                    selected_origins = (
+                        pd.to_datetime(selected["origin_time"], utc=True)
+                        .drop_duplicates().sort_values().tail(args.last_origins)
+                    )
+                    selected = selected.loc[
+                        pd.to_datetime(selected["origin_time"], utc=True).isin(selected_origins)
+                    ]
+                for row in selected.itertuples(index=False):
+                    origin = pd.Timestamp(row.origin_time)
+                    risk_rows.append({
+                        "symbol": symbol,
+                        "model": row.model,
+                        "horizon_days": int(horizon),
+                        "origin_time": origin,
+                        "target_start": row.target_start,
+                        "target_end": row.target_end,
+                        "actual_loss_percent": row.actual_loss_percent,
+                        "data_version": row.data_version,
+                        "config_hash": row.config_hash,
+                        "evaluation_scope": f"pilot_last_{args.last_origins}_origins" if args.last_origins else "full_oos",
+                        "confidence": float(row.confidence),
+                        "method": "quantile_model",
+                        "sigma_daily_percent": np.nan,
+                        "var_loss_percent": float(row.var_loss_percent),
+                        "expected_shortfall_loss_percent": float(row.expected_shortfall_loss_percent),
+                        "risk_unit": f"loss-positive, % for {horizon} day(s)",
+                        "status": "ok",
+                        "reliability": "descriptive_only" if horizon == 30 else "estimated",
+                        "volatility_path_assumption": "direct_conditional_quantile",
+                    })
+
     risk_frame = pd.DataFrame(risk_rows)
     if not risk_frame.empty:
         output = forecast_dir / "risk_forecasts.parquet"

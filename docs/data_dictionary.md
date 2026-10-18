@@ -21,7 +21,11 @@
 | `rv_forecast` | Predicted mean RV for direct horizon h | Main forecast output |
 | `sigma_h_approx` | Approximate cumulative return sigma from estimated kappa and h-day RV | In percent; risk scaling input, not a full tail distribution |
 | `var_loss_percent`, `expected_shortfall_loss_percent` | Positive-loss VaR and ES | In percent, at the requested confidence level |
-| `data_version` | Hash binding snapshot data and frozen configs | Reproducibility identifier |
-| `config_hash` | SHA-256 of research design config | Reproducibility identifier |
+| `confidence`, `method` | VaR/ES confidence and estimator name | `quantile_model` identifies direct conditional risk forecasts |
+| `actual_loss_percent` | Negative cumulative return, so losses are positive | Risk forecast target; missing until target interval completes |
+| `n_train`, `refit_at` | Training sample count and most recent model refit origin | Point-in-time model audit fields for quantile forecasts |
+| `reliability`, `evaluation_scope` | Interpretive label and OOS/pilot scope | 30-day risk is marked descriptive; pilot is not a full backtest |
+| `data_version` | Research: snapshot-manifest hash; production: synchronized-candle-frame hash | Identifies the exact market data used |
+| `config_hash` | SHA-256 identifier for the relevant model/config contract | Primary RV, direct quantile, and robustness runs may use distinct config hashes |
 
-All daily features are computed from the immutable snapshot under `data/snapshots/<as-of>/`. Forecast outputs are Parquet under `results/forecasts/` and include model status; rows with a non-`ok` status must not be treated as predictions.
+All daily features are computed from the immutable snapshot under `data/snapshots/<as-of>/`. Forecast outputs are Parquet under `results/forecasts/`. Direct quantile forecasts are written first to `quantile_forecasts.parquet` and incorporated into `risk_forecasts.parquet` by risk evaluation. Rows with a non-`ok` status must not be treated as predictions. Confidence levels are probabilities such as 0.95, while VaR and ES are positive loss magnitudes in percentage points.

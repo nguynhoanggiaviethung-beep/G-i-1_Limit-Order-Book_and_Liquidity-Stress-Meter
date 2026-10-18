@@ -22,6 +22,8 @@ def create_forecast(request: ForecastRequest):
         return load_forecast(request.symbol, request.model, request.horizon_days, request.confidence_levels)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

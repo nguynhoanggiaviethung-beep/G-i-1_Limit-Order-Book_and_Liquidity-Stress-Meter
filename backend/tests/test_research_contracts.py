@@ -12,6 +12,7 @@ from app.evaluation.var_es_backtest import christoffersen_cc, dq_test, kupiec_uc
 from app.features.dataset import DatasetSpec, build_dataset
 from app.evaluation.volatility_metrics import volatility_metrics
 from app.evaluation.tuning import tune_hyperparameters
+from app.evaluation.walkforward import walk_forward
 from app.api.schemas.forecast import ForecastRequest
 from app.services import forecast_service
 
@@ -154,6 +155,65 @@ def test_tuning_uses_search_space_with_purged_validation_folds():
 def test_forecast_request_exposes_distinct_production_mode():
     request = ForecastRequest(symbol="BTCUSDT", mode="production")
     assert request.mode == "production"
+
+
+def test_walkforward_forecast_is_invariant_to_data_after_origin(monkeypatch):
+    research = {
+        "as_of_utc": "2020-07-01T00:00:00Z",
+        "windows": {
+            "burn_in_start": "2020-01-01",
+            "first_train_start": "2020-01-01",
+            "oos_start": "2020-03-01",
+        },
+        "refit_every_days": {"garch": 7, "har": 7, "linear_ml": 7, "trees": 30},
+        "tuning": {"retune_every_days": 90, "folds": 2, "embargo_days": 29},
+        "seed": 7,
+    }
+    monkeypatch.setattr("app.evaluation.walkforward.load_research_config", lambda: research)
+    daily = _daily_frame(days=180)
+    origin = pd.Timestamp("2020-05-20T00:00:00Z")
+    full_dataset = build_dataset(daily, DatasetSpec(horizon=1), as_of=research["as_of_utc"])
+    full, _ = walk_forward(daily, full_dataset, "BTCUSDT", 1, models=["random_walk"])
+    baseline = full.loc[full["origin_time"].eq(origin), "rv_forecast"].iloc[0]
+
+    changed = daily.copy()
+    changed.loc[changed["utc_date"] >= origin, ["rv", "close_ret"]] *= 1000
+    changed_dataset = build_dataset(changed, DatasetSpec(horizon=1), as_of=research["as_of_utc"])
+    altered, _ = walk_forward(changed, changed_dataset, "BTCUSDT", 1, models=["random_walk"])
+    altered_value = altered.loc[altered["origin_time"].eq(origin), "rv_forecast"].iloc[0]
+    assert altered_value == baseline
+
+
+def test_walkforward_resume_matches_full_forecast_suffix(monkeypatch):
+    research = {
+        "as_of_utc": "2020-07-01T00:00:00Z",
+        "windows": {
+            "burn_in_start": "2020-01-01",
+            "first_train_start": "2020-01-01",
+            "oos_start": "2020-03-01",
+        },
+        "refit_every_days": {"garch": 7, "har": 7, "linear_ml": 7, "trees": 30},
+        "tuning": {"retune_every_days": 90, "folds": 2, "embargo_days": 29},
+        "seed": 7,
+    }
+    monkeypatch.setattr("app.evaluation.walkforward.load_research_config", lambda: research)
+    daily = _daily_frame(days=180)
+    dataset = build_dataset(daily, DatasetSpec(horizon=1), as_of=research["as_of_utc"])
+    full, _ = walk_forward(daily, dataset, "BTCUSDT", 1, models=["random_walk"])
+    split = pd.Timestamp("2020-05-01T00:00:00Z")
+    resumed, _ = walk_forward(daily, dataset, "BTCUSDT", 1, models=["random_walk"], start_after=split)
+    expected = full.loc[full["origin_time"].gt(split), ["origin_time", "rv_forecast"]].reset_index(drop=True)
+    actual = resumed[["origin_time", "rv_forecast"]].reset_index(drop=True)
+    pd.testing.assert_frame_equal(actual, expected)
+
+
+def test_kupiec_detects_a_known_excess_exception_rate():
+    rng = np.random.default_rng(2026)
+    well_calibrated = rng.binomial(1, 0.05, size=20_000)
+    misspecified = rng.binomial(1, 0.10, size=20_000)
+    assert abs(well_calibrated.mean() - 0.05) < 0.01
+    assert kupiec_uc(well_calibrated, 0.05)["pvalue"] > 0.01
+    assert kupiec_uc(misspecified, 0.05)["pvalue"] < 0.01
 
 
 def test_production_forecast_rejects_a_stale_local_feed(monkeypatch):

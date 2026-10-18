@@ -145,6 +145,8 @@ def walk_forward(
     start_after: str | pd.Timestamp | None = None,
     data_version: str | None = None,
     config_hash: str | None = None,
+    progress_every_origins: int | None = None,
+    training_window_days: int | None = None,
 ) -> tuple[pd.DataFrame, dict]:
     """Generate OOS rows while enforcing target_end <= origin for each refit."""
     research = load_research_config()
@@ -181,7 +183,13 @@ def walk_forward(
     all_x = dataset.x
     all_y = dataset.y
     meta = dataset.meta
-    for origin in all_x.index:
+    for position, origin in enumerate(all_x.index, start=1):
+        if progress_every_origins and position % progress_every_origins == 0:
+            print(
+                f"{symbol} h={horizon} {','.join(names)}: "
+                f"processed {position:,}/{len(all_x):,} daily origins through {origin}",
+                flush=True,
+            )
         origin = pd.Timestamp(origin)
         if origin < burn_in_start or origin > as_of:
             continue
@@ -196,6 +204,10 @@ def walk_forward(
             & (meta["target_end"] <= origin)
             & (meta["origin_time"] >= first_train_start)
         )
+        if training_window_days is not None:
+            if training_window_days < 1:
+                raise ValueError("training_window_days must be positive")
+            train_mask &= meta["origin_time"] >= origin - pd.Timedelta(days=training_window_days)
         train_y = all_y.loc[train_mask]
         if train_y.empty:
             continue

@@ -1,2 +1,0 @@
-symbol,horizon_days,model,n_obs,n_forecast_floored,floor_mean,mae,mse,rmse,qlike,volatility_mae,volatility_rmse,log_rv_mae,log_rv_rmse,r2_oos_vs_benchmark,mincer_zarnowitz
-BTCUSDT,1,random_walk,1003,14,0.5045691664747626,4.032186126594162,85.19736455235011,9.230241846904669,0.4307314779346198,0.7158812708228379,1.064028284148734,0.6502900081949802,0.8603326255169041,3.187304995166951e-05,"{'intercept': 4.101822353638183, 'slope': 0.36379103773445465, 'joint_pvalue': 8.965517817738913e-15}"

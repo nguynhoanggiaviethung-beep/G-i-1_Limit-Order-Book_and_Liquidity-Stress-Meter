@@ -116,7 +116,20 @@ def main() -> None:
     tables.mkdir(parents=True, exist_ok=True)
     metrics_dir.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(metrics_rows).to_csv(tables / "rv_oos_metrics.csv", index=False)
-    pd.DataFrame(dm_rows).to_csv(tables / "dm_hln_tests.csv", index=False)
+    dm_frame = pd.DataFrame(dm_rows)
+    if not dm_frame.empty:
+        pvalues = pd.to_numeric(dm_frame["pvalue"], errors="coerce").to_numpy(dtype=float)
+        valid = np.isfinite(pvalues)
+        adjusted = np.full(len(dm_frame), np.nan)
+        indices = np.flatnonzero(valid)
+        order = np.argsort(pvalues[valid])
+        ordered = pvalues[valid][order]
+        corrected = np.minimum(np.maximum.accumulate((len(ordered) - np.arange(len(ordered))) * ordered), 1.0)
+        adjusted[indices[order]] = corrected
+        dm_frame["pvalue_holm_global"] = adjusted
+        dm_frame["holm_reject_5pct"] = adjusted < 0.05
+        dm_frame["multiplicity_family"] = "all DM/HLN model comparisons in this report"
+    dm_frame.to_csv(tables / "dm_hln_tests.csv", index=False)
     if mcs_rows:
         pd.DataFrame(mcs_rows).to_csv(tables / "mcs_membership.csv", index=False)
     destination = metrics_dir / "rv_model_comparison.json"

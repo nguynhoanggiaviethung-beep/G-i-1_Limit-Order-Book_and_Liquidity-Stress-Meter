@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="850" height="500" viewBox="0 0 850 500">
+<title>F8 BTCUSDT one-day QLIKE by regime</title>
+<rect width="100%" height="100%" fill="#fff"/>
+<text x="210" y="40" font-family="Arial,sans-serif" font-size="22" font-weight="700" fill="#17212b">F8 BTCUSDT one-day QLIKE by regime</text>
+<text x="271.0" y="82" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="#26323d">random_walk</text>
+<text x="393.0" y="82" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="#26323d">har</text>
+<text x="515.0" y="82" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="#26323d">elasticnet</text>
+<text x="637.0" y="82" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="#26323d">random_forest</text>
+<text x="200" y="118" text-anchor="end" font-family="Arial,sans-serif" font-size="12" fill="#26323d">bear</text>
+<rect x="210" y="100" width="119" height="22" rx="2" fill="#859197"/>
+<text x="269.5" y="116" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#17212b">0.414</text>
+<rect x="332" y="100" width="119" height="22" rx="2" fill="#bdc9cf"/>
+<text x="391.5" y="116" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#17212b">0.289</text>
+<rect x="454" y="100" width="119" height="22" rx="2" fill="#dbe7ed"/>
+<text x="513.5" y="116" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#17212b">0.223</text>
+<rect x="576" y="100" width="119" height="22" rx="2" fill="#ebf5fd"/>
+<text x="635.5" y="116" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#17212b">0.189</text>
+<text x="200" y="143" text-anchor="end" font-family="Arial,sans-serif" font-size="12" fill="#26323d">bull</text>
+<rect x="210" y="125" width="119" height="22" rx="2" fill="#7a868c"/>
+<text x="269.5" y="141" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#17212b">0.438</text>
+<rect x="332" y="125" width="119" height="22" rx="2" fill="#abb7bd"/>
+<text x="391.5" y="141" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#17212b">0.329</text>
+<rect x="454" y="125" width="119" height="22" rx="2" fill="#bdc9cf"/>
+<text x="513.5" y="141" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#17212b">0.29</text>
+<rect x="576" y="125" width="119" height="22" rx="2" fill="#c5d1d7"/>
+<text x="635.5" y="141" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#17212b">0.272</text>
+<text x="200" y="168" text-anchor="end" font-family="Arial,sans-serif" font-size="12" fill="#26323d">neutral</text>
+<rect x="210" y="150" width="119" height="22" rx="2" fill="#69757b"/>
+<text x="269.5" y="166" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#17212b">0.476</text>
+<rect x="332" y="150" width="119" height="22" rx="2" fill="#c6d2d8"/>
+<text x="391.5" y="166" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#17212b">0.27</text>
+<rect x="454" y="150" width="119" height="22" rx="2" fill="#d5e1e7"/>
+<text x="513.5" y="166" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#17212b">0.236</text>
+<rect x="576" y="150" width="119" height="22" rx="2" fill="#e1edf3"/>
+<text x="635.5" y="166" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#17212b">0.21</text>
+<text x="200" y="193" text-anchor="end" font-family="Arial,sans-serif" font-size="12" fill="#26323d">stress</text>
+<rect x="210" y="175" width="119" height="22" rx="2" fill="#8d999f"/>
+<text x="269.5" y="191" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#17212b">0.395</text>
+<rect x="332" y="175" width="119" height="22" rx="2" fill="#c2ced4"/>
+<text x="391.5" y="191" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#17212b">0.278</text>
+<rect x="454" y="175" width="119" height="22" rx="2" fill="#d4e0e6"/>
+<text x="513.5" y="191" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#17212b">0.238</text>
+<rect x="576" y="175" width="119" height="22" rx="2" fill="#d8e4ea"/>
+<text x="635.5" y="191" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#17212b">0.229</text>
+</svg>

@@ -1,5 +1,2 @@
-# Optional model families from Code Plan v3 (install only when those runs are needed).
-lightgbm>=4.5,<5
-xgboost>=2.1,<4
-# Deep-learning models (LSTM/GRU/Transformer) are intentionally staged after baseline stability.
-torch>=2.5,<3
+# Optional tree and conditional-quantile models from Code Plan v3.
+-r ../requirements-ml.txt

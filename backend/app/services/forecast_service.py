@@ -1,6 +1,7 @@
 """Serve immutable historical research forecasts and current-data production forecasts."""
 
 from datetime import datetime, timezone
+import hashlib
 from pathlib import Path
 
 import numpy as np
@@ -10,6 +11,7 @@ from scipy.stats import norm
 from app.core.config import REPOSITORY_ROOT, load_settings
 from app.core.research_config import load_research_config
 from app.core.seeds import set_global_seed
+from app.core.versioning import sha256_file
 from app.evaluation.walkforward import (
     BENCHMARK_MODELS,
     GARCH_MODELS,
@@ -227,18 +229,21 @@ def create_production_forecast(
         "generated_at_utc": generated_at,
         "source_data_as_of_utc": latest_close.isoformat(),
         "source_data_age_seconds": round(age_seconds, 3),
-        "data_version": "rolling_local_binance_feed",
-        "config_hash": None,
+        "data_version": hashlib.sha256(
+            pd.util.hash_pandas_object(candles, index=False).to_numpy().tobytes()
+        ).hexdigest(),
+        "config_hash": sha256_file(REPOSITORY_ROOT / "config" / "research.yaml"),
         "actual_rv_mean": None,
         "rv_forecast": rv_forecast,
         "sigma_h_approx": sigma_h,
-        "risk_unit": f"return in percent; variance in percent squared; risk in % for {horizon_days} day(s)",
+        "risk_unit": f"returns are percent; RV is percent squared; VaR/ES are loss-positive % for {horizon_days} day(s)",
         "kappa_return_variance_to_rv": float(kappa),
         "model_kappa": float(model_kappa),
         "status": "ok",
         "var_es": var_es,
         "note": (
-            "Current rolling Binance data; this request refits from point-in-time complete days, "
+            "Current rolling Binance data; data_version fingerprints the synchronized candle frame. "
+            "This request refits from point-in-time complete days, "
             "does not write to the frozen research snapshot, and labels VaR/ES as a normal approximation."
         ),
     }

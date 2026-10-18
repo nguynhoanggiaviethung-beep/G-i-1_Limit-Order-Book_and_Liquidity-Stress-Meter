@@ -48,13 +48,24 @@ def param_var_es(
 
 
 def fit_skewt_params(standardized_residuals) -> dict:
-    """Maximum-likelihood fit for Hansen's unit-variance skew-t innovations."""
+    """Fit Hansen's unit-variance skew-t shape to centered, unit-variance residuals.
+
+    ``param_var_es`` evaluates the standardized Hansen law, so the empirical
+    residual pool must be centered and scaled before fitting its shape. The
+    fitted law then has the same zero-mean, unit-variance convention used by
+    the VaR/ES quantile and partial-moment formulas below.
+    """
     from arch.univariate import SkewStudent
 
     values = np.asarray(standardized_residuals, dtype=float)
     values = values[np.isfinite(values)]
     if len(values) < 100:
         raise ValueError("Skew-t fitting requires at least 100 finite residuals")
+    values = values - float(np.mean(values))
+    sample_scale = float(np.std(values, ddof=0))
+    if not np.isfinite(sample_scale) or sample_scale <= np.finfo(float).eps:
+        raise ValueError("Skew-t fitting requires residuals with positive finite variance")
+    values = values / sample_scale
     distribution = SkewStudent()
     start = np.asarray(distribution.starting_values(values), dtype=float)
 

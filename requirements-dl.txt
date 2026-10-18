@@ -1,0 +1,2 @@
+# Optional LSTM/GRU/Transformer experiments. Install separately; large dependency.
+torch>=2.5,<3

@@ -27,6 +27,8 @@ def main() -> None:
     parser.add_argument("--overwrite-forecasts", action="store_true", help="Discard and rebuild walk-forward output files")
     parser.add_argument("--skip-mcs", action="store_true")
     parser.add_argument("--skip-risk", action="store_true")
+    parser.add_argument("--skip-quantile", action="store_true", help="Skip direct conditional-quantile VaR/ES models")
+    parser.add_argument("--skip-robustness", action="store_true", help="Skip the separate HAR robustness runs")
     args = parser.parse_args()
 
     symbols = [item for symbol in (args.symbols or []) for item in ("--symbol", symbol)]
@@ -41,11 +43,19 @@ def main() -> None:
     run("build_features.py", *symbols)
     walkforward_args = ["--overwrite"] if args.overwrite_forecasts else []
     run("run_walkforward.py", *symbols, *horizons, *models, *walkforward_args)
+    if not args.skip_quantile:
+        quantile_args = ["--overwrite"] if args.overwrite_forecasts else []
+        run("run_quantile_walkforward.py", *symbols, *horizons, *quantile_args)
     table_args = ["--skip-mcs"] if args.skip_mcs else []
     run("make_report_tables.py", *symbols, *horizons, *table_args)
     if not args.skip_risk:
         run("run_risk_eval.py", *symbols, *horizons, *models)
     run("run_regime_economic_eval.py", *symbols, *horizons)
+    if not args.skip_robustness:
+        robustness_args = ["--overwrite"] if args.overwrite_forecasts else []
+        run("run_robustness.py", *symbols, *horizons, *robustness_args)
+    run("make_paper_tables.py")
+    run("make_figures.py")
 
 
 if __name__ == "__main__":

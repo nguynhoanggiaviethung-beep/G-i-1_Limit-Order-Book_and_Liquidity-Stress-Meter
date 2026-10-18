@@ -91,3 +91,60 @@ def risk_budget_backtest(losses, var_forecasts, budget_percent: float, max_lever
         "breach_rate": float(breaches.mean()) if len(breaches) else float("nan"),
         "mean_position_weight": float(weights.mean()) if len(weights) else float("nan"),
     }
+
+
+def dynamic_margin_backtest(
+    losses,
+    es_forecasts,
+    buffer: float = 1.3,
+    fixed_margin_percent: float = 5.0,
+    annual_capital_cost: float = 0.05,
+    floor: float = 0.0,
+) -> dict:
+    """Compare ES-linked collateral with a fixed notional margin.
+
+    Losses, expected shortfall, and margins use positive percentage points of
+    notional. The annual capital charge is a financing-cost assumption, not a
+    trading fee or exchange liquidation rule.
+    """
+    actual = np.asarray(losses, dtype=float)
+    es = np.asarray(es_forecasts, dtype=float)
+    if actual.shape != es.shape:
+        raise ValueError("losses and ES forecasts must align")
+    if buffer <= 0 or fixed_margin_percent < 0 or annual_capital_cost < 0 or floor < 0:
+        raise ValueError("buffer must be positive; margin, annual cost, and floor non-negative")
+    valid = np.isfinite(actual) & np.isfinite(es) & (es >= 0)
+    actual, es = actual[valid], es[valid]
+    if not len(actual):
+        raise ValueError("No valid aligned loss and ES observations")
+
+    dynamic = np.maximum(buffer * es, floor)
+    fixed = np.full(len(actual), fixed_margin_percent, dtype=float)
+
+    def score(margin: np.ndarray) -> dict:
+        shortfall = np.maximum(actual - margin, 0.0)
+        changes = np.abs(np.diff(margin))
+        mean_margin = float(np.mean(margin))
+        return {
+            "n_obs": int(len(actual)),
+            "mean_margin_percent": mean_margin,
+            "max_margin_percent": float(np.max(margin)),
+            "margin_breaches": int(np.sum(actual > margin)),
+            "breach_rate": float(np.mean(actual > margin)),
+            "mean_shortfall_percent": float(np.mean(shortfall)),
+            "max_shortfall_percent": float(np.max(shortfall)),
+            "mean_daily_capital_cost_percent": float(mean_margin * annual_capital_cost / 365.0),
+            "mean_absolute_margin_change_percent": float(np.mean(changes)) if changes.size else 0.0,
+            "procyclicality_ratio": float(np.mean(changes) / max(mean_margin, np.finfo(float).tiny)) if changes.size else 0.0,
+        }
+
+    return {
+        "dynamic_es_margin": score(dynamic),
+        "fixed_margin": score(fixed),
+        "assumptions": {
+            "es_buffer": float(buffer),
+            "fixed_margin_percent_of_notional": float(fixed_margin_percent),
+            "annual_capital_cost": float(annual_capital_cost),
+            "margin_floor_percent": float(floor),
+        },
+    }

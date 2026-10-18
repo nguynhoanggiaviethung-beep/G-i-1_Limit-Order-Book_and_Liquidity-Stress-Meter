@@ -12,30 +12,42 @@ Chạy trong PowerShell, tại thư mục gốc repository:
 py -3.11 -m venv .venv
 $PY = ".\.venv\Scripts\python.exe"
 & $PY -m pip install --upgrade pip
-& $PY -m pip install -r backend\requirements.txt
+& $PY -m pip install -r requirements.txt -r requirements-dev.txt
 & $PY backend\scripts\sync_data.py
+```
+
+Python 3.11 được dùng làm môi trường chuẩn. Các package lõi đã khóa phiên bản trong `requirements.txt`; test/development ở `requirements-dev.txt`. Cài thêm LightGBM và XGBoost để chạy đủ các mô hình cây:
+
+```powershell
+& $PY -m pip install -r requirements-ml.txt
+```
+
+PyTorch là tùy chọn riêng cho các thử nghiệm deep learning, hiện chưa thuộc pipeline phát hành:
+
+```powershell
+& $PY -m pip install -r requirements-dl.txt
 ```
 
 Lần tải đầu lấy lịch sử từ `2019-01-01`; các lần sau đồng bộ tiếp phần còn thiếu và lưu nến đóng vào `data/processed/`. Dữ liệu thô và Parquet lớn nằm ngoài Git. Khi FastAPI đang chạy, bộ đồng bộ nền tiếp tục cập nhật mỗi 5 phút; xem trạng thái tại `http://127.0.0.1:8000/api/v1/sync-status`.
 
 ## Chạy nghiên cứu
 
-Lệnh dưới đây dựng snapshot đúng mốc cấu hình, tạo feature, chạy walk-forward và xuất bảng đánh giá/risk. Để đồng bộ Binance trước pipeline, thêm `--sync`. Snapshot có sẵn được giữ bất biến; chỉ dùng `--force-snapshot` khi chủ động muốn dựng lại nó từ dữ liệu local.
+Lệnh dưới đây dựng snapshot đúng mốc cấu hình, tạo feature, chạy walk-forward, conditional quantile VaR/ES, robustness, đánh giá kinh tế và xuất bảng/biểu đồ. Để đồng bộ Binance trước pipeline, thêm `--sync`. Snapshot có sẵn được giữ bất biến; chỉ dùng `--force-snapshot` khi chủ động muốn dựng lại nó từ dữ liệu local.
 
 ```powershell
 $PY = ".\.venv\Scripts\python.exe"
 & $PY backend\scripts\run_pipeline.py
 ```
 
-Một lượt đầy đủ có thể chạy lâu do có nhiều symbol, horizon, GARCH và tuning mô hình. Để chạy nhanh một baseline:
+Một lượt đầy đủ có thể chạy lâu: có nhiều symbol/horizon, GARCH, quantile forest và các biến thể robustness. Mô hình LightGBM/XGBoost được bỏ qua có thông báo nếu chưa cài `requirements-ml.txt`. Lệnh nhanh dưới đây chỉ chạy baseline RV, không chạy phần risk, quantile hay robustness:
 
 ```powershell
-& $PY backend\scripts\run_pipeline.py --symbol BTCUSDT --horizon 1 --model random_walk --skip-mcs --skip-risk
+& $PY backend\scripts\run_pipeline.py --symbol BTCUSDT --horizon 1 --model random_walk --skip-mcs --skip-risk --skip-quantile --skip-robustness
 ```
 
-Lệnh pipeline vẫn cần snapshot của cả hai symbol theo thiết kế nghiên cứu. Kết quả được ghi dưới `results/forecasts/`, `results/metrics/` và `results/tables/`. Các bảng regime, volatility-targeting và risk-budget nằm trong `regime_rv_metrics.csv`, `economic_strategy.csv` và `risk_budget_backtest.csv`. Kiểm tra độ phủ dữ liệu trong `data/snapshots/<as-of>/manifest.json` và `results/metrics/snapshot_quality.json`; các khoảng thiếu được giữ nguyên, không nội suy.
+Kết quả được ghi dưới `results/forecasts/`, `results/metrics/`, `results/tables/` và `results/figures/`. Pipeline xuất các bảng T1–T11, SVG F1–F9, regime metrics, volatility targeting, risk budget và dynamic margin. Kiểm tra độ phủ dữ liệu trong `data/snapshots/<as-of>/manifest.json` và `results/metrics/snapshot_quality.json`; các khoảng thiếu được giữ nguyên, không nội suy.
 
-Artifacts hiện được dựng để kiểm chứng là baseline BTCUSDT/h=1/random-walk: 2,808 origins hợp lệ (1,005 OOS, trong đó 1,004 đã có target). VaR/ES artifact hiện được ghi nhãn `pilot_last_1_origins`; đây là smoke test tính toán, chưa phải kết luận backtest đầy đủ. Dùng pipeline không giới hạn model/horizon để tạo ma trận nghiên cứu hoàn chỉnh.
+Workspace hiện có ma trận forecast RV baseline cho BTCUSDT/ETHUSDT × 1/7/30 ngày, gồm 16 model cổ điển mỗi chuỗi và 1,005 origin OOS mỗi model. `risk_forecasts.parquet` có 707,520 dòng `full_oos`; kết quả 30 ngày vẫn chỉ mang tính mô tả. Bảng T1–T11 và hình F1–F9 được tạo từ các artifact này cùng kết quả robustness. Quantile VaR/ES trực tiếp chưa chạy; LightGBM/XGBoost chưa cài nên các model đó được bỏ qua có thông báo. Dùng pipeline đầy đủ sau khi cài package tùy chọn để bổ sung các kết quả còn thiếu.
 
 ## Chạy API và xem dự báo
 
@@ -80,5 +92,7 @@ Invoke-RestMethod -Method Post `
 - Quy tắc nguồn, mốc thời gian, feature, chia tập và thước đo nằm trong [research_design.md](docs/research_design.md), [methodology.md](docs/methodology.md) và [data_dictionary.md](docs/data_dictionary.md).
 - Nến 5 phút được xem là hoàn chỉnh khi có đủ 288 nến và 288 lợi suất liên tiếp trong ngày UTC. Ngày lỗi/gap không trở thành target.
 - Risk 7/30 ngày dùng giả định đường sigma ngày phẳng trong FHS; kết quả 30 ngày chỉ mang tính mô tả do mẫu kiểm định hiệu dụng nhỏ.
-- VaR/ES có thêm empirical quantile trên residual chuẩn hóa; conditional quantile models, deep learning và feature phái sinh/vĩ mô chưa có trong baseline. Không có dữ liệu ngoài tự tạo hoặc nội suy.
+- VaR/ES gồm các phương pháp phân phối, FHS/EVT và mô hình quantile trực tiếp (`linear_qr`, `lightgbm_quantile`, `qrf`). Với quantile model, VaR là quantile có điều kiện; ES là trung bình đuôi loss trong tập huấn luyện tại thời điểm forecast, nên được ghi nhận là ước lượng đuôi thực nghiệm. Quantile và robustness dùng cấu hình riêng, không sửa `config/research.yaml`.
+- Biến ngoại sinh phái sinh/vĩ mô không được bật vì chưa có nguồn lịch sử point-in-time đã kiểm chứng. Deep learning được hoãn; `requirements-dl.txt` chỉ là môi trường tùy chọn, chưa có kết quả DL trong pipeline. Không tự tạo hoặc nội suy dữ liệu ngoài.
+- Bài kiểm tra chạy bằng `& $PY -m pytest -c backend\pytest.ini backend\tests --basetemp .pytest-tmp`. CI tự chạy test trên Python 3.11.
 - `data/`, model files và kết quả Parquet lớn không commit. Chỉ commit code, cấu hình và báo cáo nhỏ đã rà soát.

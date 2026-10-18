@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from app.core.config import load_settings  # noqa: E402
 from app.core.research_config import load_research_config  # noqa: E402
-from app.evaluation.economic import risk_budget_backtest, volatility_targeting  # noqa: E402
+from app.evaluation.economic import dynamic_margin_backtest, risk_budget_backtest, volatility_targeting  # noqa: E402
 from app.evaluation.regimes import label_regimes  # noqa: E402
 from app.evaluation.volatility_metrics import volatility_metrics  # noqa: E402
 
@@ -42,6 +42,7 @@ def main() -> None:
     regime_rows: list[dict] = []
     economic_rows: list[dict] = []
     risk_budget_rows: list[dict] = []
+    dynamic_margin_rows: list[dict] = []
     report: dict = {"as_of_utc": research["as_of_utc"], "symbols": {}}
 
     for symbol in symbols:
@@ -115,6 +116,7 @@ def main() -> None:
                         "symbol": symbol,
                         "horizon_days": 1,
                         "model": model,
+                        "strategy": "volatility_targeting",
                         **result,
                     })
                 risk_path = forecast_root / "risk_forecasts.parquet"
@@ -125,21 +127,47 @@ def main() -> None:
                         & risks["horizon_days"].eq(1)
                         & risks["confidence"].eq(0.95)
                     ].copy()
-                    if "data_version" in risks and "data_version" in forecasts:
-                        expected_versions = forecasts.set_index("origin_time")["data_version"]
-                        risks["origin_time"] = pd.to_datetime(risks["origin_time"], utc=True)
-                        version_matches = risks.apply(
-                            lambda row: row["data_version"] == expected_versions.get(row["origin_time"]),
-                            axis=1,
+                    risks["origin_time"] = pd.to_datetime(risks["origin_time"], utc=True)
+                    forecast_versions = forecasts.copy()
+                    forecast_versions["origin_time"] = pd.to_datetime(
+                        forecast_versions["origin_time"], utc=True
+                    )
+                    # All models at one origin use the same frozen candle snapshot;
+                    # use that to validate quantile forecasts too, even though they
+                    # have a separate quantile-config hash and no RV model row.
+                    if "data_version" in risks and "data_version" in forecast_versions:
+                        origin_versions = (
+                            forecast_versions.groupby("origin_time", as_index=False)["data_version"]
+                            .first()
                         )
-                        risks = risks.loc[version_matches]
-                        if "config_hash" in risks and "config_hash" in forecasts:
-                            expected_configs = forecasts.set_index("origin_time")["config_hash"]
-                            config_matches = risks.apply(
-                                lambda row: row["config_hash"] == expected_configs.get(row["origin_time"]),
-                                axis=1,
-                            )
-                            risks = risks.loc[config_matches]
+                        risks = risks.merge(
+                            origin_versions.rename(columns={"data_version": "_expected_data_version"}),
+                            on="origin_time",
+                            how="left",
+                            validate="many_to_one",
+                        )
+                        version_matches = (
+                            risks["_expected_data_version"].isna()
+                            | risks["data_version"].eq(risks["_expected_data_version"])
+                        )
+                        risks = risks.loc[version_matches].drop(columns="_expected_data_version")
+                    # A config hash belongs to a model's own forecast run. Do not
+                    # compare a quantile model's hash with an unrelated HAR/RV hash.
+                    if "config_hash" in risks and "config_hash" in forecast_versions:
+                        expected_configs = forecast_versions[
+                            ["model", "origin_time", "config_hash"]
+                        ].drop_duplicates(["model", "origin_time"])
+                        risks = risks.merge(
+                            expected_configs.rename(columns={"config_hash": "_expected_config_hash"}),
+                            on=["model", "origin_time"],
+                            how="left",
+                            validate="many_to_one",
+                        )
+                        config_matches = (
+                            risks["_expected_config_hash"].isna()
+                            | risks["config_hash"].eq(risks["_expected_config_hash"])
+                        )
+                        risks = risks.loc[config_matches].drop(columns="_expected_config_hash")
                     for (model, method), group in risks.groupby(["model", "method"], sort=True):
                         score = risk_budget_backtest(
                             group["actual_loss_percent"],
@@ -159,12 +187,40 @@ def main() -> None:
                             "budget_percent": 1.0,
                             **score,
                         })
+                        valid_margin = group.dropna(
+                            subset=["actual_loss_percent", "expected_shortfall_loss_percent"]
+                        ).sort_values("origin_time")
+                        if not valid_margin.empty:
+                            margin_result = dynamic_margin_backtest(
+                                valid_margin["actual_loss_percent"],
+                                valid_margin["expected_shortfall_loss_percent"],
+                            )
+                            summary = {
+                                "symbol": symbol,
+                                "horizon_days": 1,
+                                "model": model,
+                                "risk_method": method,
+                                "confidence": 0.95,
+                                "evaluation_scope": (
+                                    str(valid_margin["evaluation_scope"].iloc[0])
+                                    if "evaluation_scope" in valid_margin else "unknown"
+                                ),
+                                **margin_result["dynamic_es_margin"],
+                            }
+                            dynamic_margin_rows.append({**summary, "comparison": margin_result["fixed_margin"], "assumptions": margin_result["assumptions"]})
+                            economic_rows.append({
+                                **summary,
+                                "strategy": "dynamic_margin",
+                                **{f"fixed_{key}": value for key, value in margin_result["fixed_margin"].items() if key != "n_obs"},
+                                **{f"assumption_{key}": value for key, value in margin_result["assumptions"].items()},
+                            })
 
             report["symbols"][symbol]["horizons"][str(horizon)] = horizon_report
 
     pd.DataFrame(regime_rows).to_csv(tables / "regime_rv_metrics.csv", index=False)
     pd.DataFrame(economic_rows).to_csv(tables / "economic_strategy.csv", index=False)
     pd.DataFrame(risk_budget_rows).to_csv(tables / "risk_budget_backtest.csv", index=False)
+    pd.DataFrame(dynamic_margin_rows).to_csv(tables / "dynamic_margin_backtest.csv", index=False)
     destination = metrics / "regime_economic_evaluation.json"
     temporary = destination.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")

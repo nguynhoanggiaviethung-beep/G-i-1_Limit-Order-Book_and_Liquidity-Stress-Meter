@@ -12,11 +12,17 @@ Forecast origins are 00:00 UTC after the preceding day closes. Direct targets ar
 
 Burn-in forecasts are retained to form model-specific historical standardized residuals. For origin `t`, risk residuals include only forecasts whose full target window ended by `t`; each h-day return is standardized by its own ex-ante forecast and variance-to-RV calibration. Student-t degrees of freedom are estimated under unit innovation variance. For horizons above one day, FHS uses a flat daily sigma path and labels this assumption in each result.
 
-## Models and selection
+## Models, risk, and selection
 
 The current walk-forward set contains random-walk, rolling means and EWMA benchmarks; HAR, log-HAR, HAR-J, HAR-CJ, SHAR and HARQ; GARCH-family models; ElasticNet; and optional random forest, LightGBM and XGBoost. ElasticNet predicts log RV with a residual variance correction. Tree and linear ML inputs exclude raw unscaled volume levels. The tuning script reads `config/search_space.yaml` and runs purged expanding time-series folds with a horizon-aware embargo, retuning every 90 days in OOS.
 
-The report script emits QLIKE and other RV metrics, HAC Mincer-Zarnowitz tests, Diebold-Mariano/HLN comparisons and a model confidence set. VaR coverage uses Kupiec and Christoffersen tests, with non-overlapping h-day samples when h>1. ES is evaluated with FZ0 and an Acerbi-Szekely diagnostic; the latter reports a reproducible Monte Carlo p-value. One-day risk includes standardized historical quantiles alongside parametric, FHS and EVT estimates. A 30-day risk result is descriptive because its effective exception count is small. `run_regime_economic_eval.py` joins forecast origins to trailing-only bull/bear/stress labels and writes conditional RV metrics plus cost-aware volatility-target and risk-budget summaries.
+The report script emits QLIKE and other RV metrics, HAC Mincer-Zarnowitz tests, Diebold-Mariano/HLN comparisons with a global Holm adjustment, and a model confidence set. VaR coverage uses Kupiec, Christoffersen and dynamic-quantile tests; horizons above one day are evaluated on non-overlapping offsets. ES is evaluated with FZ0 and an Acerbi-Szekely diagnostic; the latter reports a reproducible Monte Carlo p-value. Skew-t residual fitting first centers and scales the point-in-time residual pool to unit mean and variance before maximum likelihood estimation.
+
+One-day risk includes parametric normal/t/skew-t, FHS, EVT-POT and standardized historical residual quantiles. The optional direct conditional-risk extension runs `linear_qr`, `lightgbm_quantile` and quantile random forest at 95%, 97.5% and 99%, refits every 30 days, enforces `target_end <= origin`, and rearranges crossing quantiles. Its ES is estimated from the training-only empirical loss tail beyond the predicted VaR. Quantile settings and hashes live in `config/quantile.yaml`; these runs do not edit the frozen primary config. A 30-day risk result is descriptive because its effective exception count is small.
+
+`run_regime_economic_eval.py` joins forecast origins to trailing-only bull/bear/stress labels and writes conditional RV metrics plus volatility-target and risk-budget summaries. It also compares ES-linked dynamic collateral with a fixed 5%-of-notional margin. Capital charge, buffer and margin floor are explicit assumptions, not an exchange liquidation rule.
+
+`run_robustness.py` evaluates a separate HAR 5/22 feature-window variant and 1,000/1,500-day rolling training windows from `config/robustness.yaml`. `make_paper_tables.py` exports T1–T11. `make_figures.py` writes F1–F9 as portable SVG. Multiple RV model comparisons use a global Holm family; the report includes MCS outputs as a complementary comparison.
 
 ## Production forecasts
 
@@ -34,6 +40,6 @@ $PY = ".\.venv\Scripts\python.exe"
 
 For the individual stages, see the commands in `README.md`. Full historical outputs are generated locally under `results/`; older MVP artifacts are preserved in `results/archive/legacy_mvp_20261018/` and must not be combined with current v3 results.
 
-## Not yet included
+## Scope and deferred work
 
-Conditional quantile-regression models, deep-learning models, external derivative/macro data, and rolling-window robustness are not part of the current baseline run. Their configuration or helper modules alone do not imply that results have been generated. Add these only with documented source availability and point-in-time rules.
+Exogenous derivative/macro factors remain out of scope because no reliable historical feed with documented publication/availability timestamps is configured. Deep learning is deferred until the classical pipeline and optional dependency environment are stable; no DL result is implied by `requirements-dl.txt`. The workspace currently contains full 2-symbol × 3-horizon classical RV, VaR/ES and HAR robustness outputs. Direct conditional-quantile forecasts have been implemented and smoke-tested but have not yet been run across the complete matrix; LightGBM/XGBoost are also absent until installed from `requirements-ml.txt`. Interpret tables as complete for the generated classical/robustness matrix, not as containing those deferred quantile/tree outputs.

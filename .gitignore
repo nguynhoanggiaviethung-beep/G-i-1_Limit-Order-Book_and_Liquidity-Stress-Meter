@@ -13,8 +13,12 @@ backend/.env
 backend/artifacts/*
 !backend/artifacts/.gitkeep
 results/metrics/auto_sync_status.json
+results/archive/legacy_mvp_*/
+results/forecasts/*.parquet
+results/robustness/
 *.log
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.pytest-tmp/
 .venv/

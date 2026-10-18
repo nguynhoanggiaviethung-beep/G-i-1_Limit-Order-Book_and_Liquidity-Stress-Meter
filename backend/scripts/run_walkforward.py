@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -17,7 +18,7 @@ from app.core.research_config import load_research_config  # noqa: E402
 from app.core.seeds import set_global_seed  # noqa: E402
 from app.core.versioning import sha256_file  # noqa: E402
 from app.features.dataset import DatasetSpec, build_dataset  # noqa: E402
-from app.evaluation.walkforward import DEFAULT_MODELS, walk_forward  # noqa: E402
+from app.evaluation.walkforward import DEFAULT_MODELS, OPTIONAL_MODELS, walk_forward  # noqa: E402
 
 
 def main() -> None:
@@ -33,6 +34,14 @@ def main() -> None:
     symbols = [value.upper() for value in (args.symbol or research["symbols"])]
     horizons = args.horizon or research["horizons_days"]
     models = args.models or DEFAULT_MODELS
+    available_models = []
+    for model in models:
+        package = "lightgbm" if model.startswith("lightgbm") else "xgboost" if model == "xgboost" else None
+        if model in OPTIONAL_MODELS and package and importlib.util.find_spec(package) is None:
+            print(f"SKIP {model}: install backend/requirements-optional.txt to enable it", flush=True)
+            continue
+        available_models.append(model)
+    models = available_models
     cutoff = pd.Timestamp(research["as_of_utc"])
     snapshot_dir = settings.data_dir / "snapshots" / cutoff.strftime("%Y-%m-%dT%H-%M-%SZ")
     manifest_path = snapshot_dir / "manifest.json"
@@ -89,6 +98,7 @@ def main() -> None:
                     start_after=start_after,
                     data_version=manifest["data_version"],
                     config_hash=config_hash,
+                    progress_every_origins=90,
                 )
                 if not current.empty:
                     current_frames.append(current)

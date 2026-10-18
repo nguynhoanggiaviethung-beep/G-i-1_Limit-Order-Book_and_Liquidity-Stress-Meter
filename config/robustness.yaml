@@ -1,0 +1,14 @@
+# Robustness variants are separate from the frozen primary research config.
+variants:
+  har_5_22:
+    model: har_5_22
+    feature_windows: [5, 22]
+    training_window_days: null
+  har_rolling_1000:
+    model: har
+    feature_windows: [7, 30]
+    training_window_days: 1000
+  har_rolling_1500:
+    model: har
+    feature_windows: [7, 30]
+    training_window_days: 1500

@@ -1,0 +1,3 @@
+symbol,interval,candle_rows,first_candle_utc,last_candle_close_utc,missing_5m_intervals,complete_utc_days,snapshot_data_version,quality_status
+BTCUSDT,5m,814222,2019-01-01T00:00:00+00:00,2026-09-30T23:59:59.999000+00:00,818,2808,34e259c8dca1e0eaf2ced93162537135277ae7adce9b642fdc43b15120c86399,warning
+ETHUSDT,5m,814222,2019-01-01T00:00:00+00:00,2026-09-30T23:59:59.999000+00:00,818,2808,34e259c8dca1e0eaf2ced93162537135277ae7adce9b642fdc43b15120c86399,warning
