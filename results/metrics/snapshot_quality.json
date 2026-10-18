@@ -1,11 +1,11 @@
 {
-  "generated_at_utc": "2026-10-17T17:41:03.726151+00:00",
-  "as_of_utc": "2026-09-30T23:59:59+00:00",
-  "data_version": "0d862440dadd58d3fb71daf61c17af948f1997fdee744eefc55e14877c775c25",
+  "generated_at_utc": "2026-10-18T00:37:45.820965+00:00",
+  "as_of_utc": "2026-10-01T00:00:00+00:00",
+  "data_version": "34e259c8dca1e0eaf2ced93162537135277ae7adce9b642fdc43b15120c86399",
   "interval": "5m",
   "symbols": {
     "BTCUSDT": {
-      "rows": 814221,
+      "rows": 814222,
       "duplicates": 0,
       "invalid_ohlcv": 0,
       "gaps": 21,
@@ -123,11 +123,11 @@
       ],
       "status": "warning",
       "first_open_time_utc": "2019-01-01T00:00:00+00:00",
-      "last_open_time_utc": "2026-09-30T23:50:00+00:00",
-      "days_with_any_gaps": 22
+      "last_open_time_utc": "2026-09-30T23:55:00+00:00",
+      "days_with_any_gaps": 21
     },
     "ETHUSDT": {
-      "rows": 814221,
+      "rows": 814222,
       "duplicates": 0,
       "invalid_ohlcv": 0,
       "gaps": 21,
@@ -245,8 +245,8 @@
       ],
       "status": "warning",
       "first_open_time_utc": "2019-01-01T00:00:00+00:00",
-      "last_open_time_utc": "2026-09-30T23:50:00+00:00",
-      "days_with_any_gaps": 22
+      "last_open_time_utc": "2026-09-30T23:55:00+00:00",
+      "days_with_any_gaps": 21
     }
   }
 }

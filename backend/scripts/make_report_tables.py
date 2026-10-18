@@ -40,7 +40,11 @@ def main() -> None:
             if not path.exists():
                 continue
             rows = pd.read_parquet(path)
-            rows = rows.loc[(rows["status"] == "ok") & rows["actual_rv_mean"].notna()].copy()
+            rows = rows.loc[
+                rows["status"].eq("ok")
+                & rows["fold"].eq("oos")
+                & rows["actual_rv_mean"].notna()
+            ].copy()
             if rows.empty:
                 continue
             wide_y = rows.pivot(index="origin_time", columns="model", values="actual_rv_mean")
@@ -104,6 +108,7 @@ def main() -> None:
                     symbol_result["mcs"] = mcs.to_dict("records")
                 except Exception as exc:
                     symbol_result["mcs_error"] = f"{type(exc).__name__}: {exc}"
+                    print(f"WARNING: MCS failed for {symbol} h={horizon}: {type(exc).__name__}: {exc}")
             report["symbols"][symbol][str(horizon)] = symbol_result
 
     tables = ROOT / "results" / "tables"

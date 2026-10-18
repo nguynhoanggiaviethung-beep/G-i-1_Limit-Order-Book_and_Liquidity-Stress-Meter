@@ -86,9 +86,12 @@ def volatility_metrics(
     result["log_rv_mae"] = float(np.mean(np.abs(np.log(y[positive_pairs]) - np.log(h[positive_pairs])))) if positive_pairs.any() else float("nan")
     result["log_rv_rmse"] = float(np.sqrt(np.mean((np.log(y[positive_pairs]) - np.log(h[positive_pairs])) ** 2))) if positive_pairs.any() else float("nan")
     if benchmark is not None:
-        denominator = float(np.sum((y - b) ** 2))
+        benchmark_floored = np.maximum(b, floors)
+        denominator = float(np.sum((y - benchmark_floored) ** 2))
         result["r2_oos_vs_benchmark"] = (
-            float(1 - np.sum((y - h) ** 2) / denominator) if denominator > 0 else float("nan")
+            float(1 - np.sum((y - h) ** 2) / denominator)
+            if denominator > 0
+            else (0.0 if np.allclose(h, benchmark_floored) else float("nan"))
         )
     result["mincer_zarnowitz"] = _mincer_zarnowitz(y, h, hac_lags)
     return result

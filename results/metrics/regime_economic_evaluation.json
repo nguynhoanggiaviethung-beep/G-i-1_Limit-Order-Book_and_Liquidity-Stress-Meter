@@ -1,0 +1,104 @@
+{
+  "as_of_utc": "2026-10-01T00:00:00Z",
+  "symbols": {
+    "BTCUSDT": {
+      "regime_counts": {
+        "bear": 1238,
+        "bull": 948,
+        "neutral": 580,
+        "stress": 64
+      },
+      "horizons": {
+        "1": {
+          "n_oos_rows": 1004,
+          "regimes": {
+            "bear": {
+              "random_walk": {
+                "n_obs": 422,
+                "n_forecast_floored": 9,
+                "floor_mean": 0.48978900955608756,
+                "mae": 3.126675088410437,
+                "mse": 53.79505053148659,
+                "rmse": 7.334510926536724,
+                "qlike": 0.41383520450755273,
+                "volatility_mae": 0.6380580943806086,
+                "volatility_rmse": 0.9104217194050481,
+                "log_rv_mae": 0.6432112354255461,
+                "log_rv_rmse": 0.862072602657025,
+                "r2_oos_vs_benchmark": 0.0,
+                "mincer_zarnowitz": {
+                  "intercept": 1.9265232008133497,
+                  "slope": 0.7556578742850881,
+                  "joint_pvalue": 4.039087317768292e-08
+                }
+              }
+            },
+            "bull": {
+              "random_walk": {
+                "n_obs": 422,
+                "n_forecast_floored": 4,
+                "floor_mean": 0.5173116195821837,
+                "mae": 3.676255664927747,
+                "mse": 61.09638835742236,
+                "rmse": 7.816417872492639,
+                "qlike": 0.43780680755644336,
+                "volatility_mae": 0.6896430180712269,
+                "volatility_rmse": 1.0132852944210005,
+                "log_rv_mae": 0.6407620636241511,
+                "log_rv_rmse": 0.8330505109667404,
+                "r2_oos_vs_benchmark": 0.0,
+                "mincer_zarnowitz": {
+                  "intercept": 3.09864677035629,
+                  "slope": 0.5250545873462164,
+                  "joint_pvalue": 1.6031225652706236e-09
+                }
+              }
+            },
+            "neutral": {
+              "random_walk": {
+                "n_obs": 120,
+                "n_forecast_floored": 1,
+                "floor_mean": 0.5111138039499535,
+                "mae": 3.3025691339529955,
+                "mse": 27.39707756983712,
+                "rmse": 5.234221773085004,
+                "qlike": 0.47583821809464827,
+                "volatility_mae": 0.6603869425536563,
+                "volatility_rmse": 0.8974522411961141,
+                "log_rv_mae": 0.6274709600103949,
+                "log_rv_rmse": 0.8586058109813298,
+                "r2_oos_vs_benchmark": 0.0,
+                "mincer_zarnowitz": {
+                  "intercept": 1.499460401501127,
+                  "slope": 0.8997166051444949,
+                  "joint_pvalue": 0.013385431563222973
+                }
+              }
+            },
+            "stress": {
+              "random_walk": {
+                "n_obs": 40,
+                "n_forecast_floored": 0,
+                "floor_mean": 0.5042298438041006,
+                "mae": 19.489774179899207,
+                "mse": 842.1784770794056,
+                "rmse": 29.020311457312197,
+                "qlike": 0.39490664029331446,
+                "volatility_mae": 1.9780388532029822,
+                "volatility_rmse": 2.5309500173049466,
+                "log_rv_mae": 0.8939562615688438,
+                "log_rv_rmse": 1.0940465585103123,
+                "r2_oos_vs_benchmark": 0.0,
+                "mincer_zarnowitz": {
+                  "intercept": 15.415036130776787,
+                  "slope": 0.02737495744243644,
+                  "joint_pvalue": 3.5527116716851384e-18
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

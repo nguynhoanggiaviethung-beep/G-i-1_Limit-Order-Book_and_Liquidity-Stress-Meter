@@ -1,6 +1,6 @@
 # Crypto volatility and tail-risk research design
 
-The research pipeline follows `config/research.yaml` and the frozen strategy in the accompanying research documents. Binance Spot BTCUSDT and ETHUSDT 5-minute candles are the source. Research is cut off at **2026-09-30 23:59:59 UTC**, independent of the live updater.
+The research pipeline follows `config/research.yaml` and the frozen strategy in the accompanying research documents. Binance Spot BTCUSDT and ETHUSDT 5-minute candles are the source. Research is cut off at **2026-10-01 00:00:00 UTC**, independent of the live updater. This includes the final 5-minute candle of 2026-09-30 only when its close timestamp is at or before the cutoff.
 
 ## Data and point-in-time rules
 

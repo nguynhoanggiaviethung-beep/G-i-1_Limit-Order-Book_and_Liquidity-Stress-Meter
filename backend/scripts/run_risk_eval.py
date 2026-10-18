@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from app.core.config import load_settings  # noqa: E402
 from app.core.research_config import load_research_config  # noqa: E402
+from app.core.seeds import set_global_seed  # noqa: E402
 from app.evaluation.es_backtests import es_backtest  # noqa: E402
 from app.evaluation.var_es_backtest import var_backtest  # noqa: E402
 from app.risk.evt import evt_pot_var_es  # noqa: E402
@@ -28,16 +29,47 @@ def _seed(*parts) -> int:
     return int.from_bytes(hashlib.sha256(payload).digest()[:4], "big")
 
 
-def _residual_pool(daily: pd.DataFrame, origin: pd.Timestamp, kappa: float, window: int) -> np.ndarray:
-    history = daily.loc[
-        (pd.to_datetime(daily["available_at_utc"], utc=True) <= origin)
-        & daily["is_complete_day"].fillna(False)
-    ].tail(window)
-    returns = pd.to_numeric(history["close_ret"], errors="coerce").to_numpy(dtype=float)
-    rv = pd.to_numeric(history["rv"], errors="coerce").to_numpy(dtype=float)
-    scale = np.sqrt(np.maximum(kappa * rv, np.finfo(float).tiny))
-    residuals = returns / scale
+def _residual_pool(
+    forecasts: pd.DataFrame,
+    model: str,
+    origin: pd.Timestamp,
+    horizon: int,
+    window: int,
+) -> np.ndarray:
+    """Use only this model's prior ex-ante forecasts to standardize h-day returns."""
+    history = forecasts.loc[
+        forecasts["model"].eq(model)
+        & forecasts["status"].eq("ok")
+        & (pd.to_datetime(forecasts["target_end"], utc=True) <= origin)
+    ].copy()
+    history["target_return"] = pd.to_numeric(history["y_cum_return"], errors="coerce")
+    history["rv_forecast"] = pd.to_numeric(history["rv_forecast"], errors="coerce")
+    history["kappa"] = pd.to_numeric(history["kappa_return_variance_to_rv"], errors="coerce")
+    history = history.dropna(subset=["target_return", "rv_forecast", "kappa"])
+    history = history.loc[(history["rv_forecast"] > 0) & (history["kappa"] > 0)]
+    history = history.sort_values("origin_time").tail(window)
+    scale = np.sqrt(horizon * history["kappa"].to_numpy() * history["rv_forecast"].to_numpy())
+    residuals = history["target_return"].to_numpy(dtype=float) / np.maximum(scale, np.finfo(float).tiny)
     return residuals[np.isfinite(residuals)]
+
+
+def _fit_unit_variance_t_df(residuals: np.ndarray) -> float:
+    """Fit Student-t degrees of freedom with the innovation variance fixed at one."""
+    from scipy.optimize import minimize_scalar
+    from scipy.stats import t as student_t
+
+    values = np.asarray(residuals, dtype=float)
+    values = values[np.isfinite(values)]
+    if len(values) < 30:
+        return 8.0
+
+    def negative_log_likelihood(degrees: float) -> float:
+        scale = np.sqrt((degrees - 2) / degrees)
+        score = -np.sum(student_t.logpdf(values, df=degrees, loc=0, scale=scale))
+        return float(score) if np.isfinite(score) else float("inf")
+
+    fit = minimize_scalar(negative_log_likelihood, bounds=(2.05, 200.0), method="bounded")
+    return float(np.clip(fit.x, 2.05, 200.0)) if fit.success else 8.0
 
 
 def _risk_record(
@@ -52,16 +84,22 @@ def _risk_record(
 ) -> dict:
     if method == "fhs":
         return fhs_var_es(np.full(horizon, sigma), residuals, confidence, paths, seed)
+    if method == "quantile":
+        loss_sample = -np.asarray(residuals, dtype=float) * sigma
+        var = max(float(np.quantile(loss_sample, confidence)), 0.0)
+        tail = loss_sample[loss_sample >= var]
+        es = max(float(np.mean(tail)) if tail.size else var, np.nextafter(var, np.inf))
+        return {
+            "var_loss_percent": var,
+            "expected_shortfall_loss_percent": es,
+            "method": "standardized_historical_quantile",
+            "horizon_days": 1,
+            "risk_unit": "loss-positive, % for 1 day",
+        }
     if method == "param_normal":
         var, es = param_var_es(sigma, "normal", confidence)
     elif method == "param_t":
-        from scipy.stats import t as student_t
-
-        try:
-            degrees, _, _ = student_t.fit(residuals, floc=0, fscale=1)
-        except Exception:
-            degrees = 8.0
-        degrees = float(np.clip(degrees, 2.05, 200))
+        degrees = _fit_unit_variance_t_df(residuals)
         var, es = param_var_es(sigma, "t", confidence, {"nu": degrees})
     elif method == "param_skewt":
         skew_params = skew_params or fit_skewt_params(residuals)
@@ -95,6 +133,7 @@ def main() -> None:
     args = parser.parse_args()
     settings = load_settings()
     research = load_research_config()
+    set_global_seed(int(research["seed"]))
     symbols = [value.upper() for value in (args.symbol or research["symbols"])]
     horizons = args.horizon or research["horizons_days"]
     model_filter = set(args.models or [])
@@ -122,36 +161,39 @@ def main() -> None:
             forecasts = forecasts.loc[forecasts["status"].eq("ok")]
             if model_filter:
                 forecasts = forecasts.loc[forecasts["model"].isin(model_filter)]
+            evaluation_forecasts = forecasts.loc[forecasts["fold"].eq("oos")]
             if args.last_origins is not None:
                 if args.last_origins < 1:
                     raise ValueError("--last-origins must be positive")
                 selected_origins = (
-                    pd.to_datetime(forecasts["origin_time"], utc=True)
+                    pd.to_datetime(evaluation_forecasts["origin_time"], utc=True)
                     .drop_duplicates().sort_values().tail(args.last_origins)
                 )
-                forecasts = forecasts.loc[
-                    pd.to_datetime(forecasts["origin_time"], utc=True).isin(selected_origins)
+                evaluation_forecasts = evaluation_forecasts.loc[
+                    pd.to_datetime(evaluation_forecasts["origin_time"], utc=True).isin(selected_origins)
                 ]
-            residual_cache: dict[pd.Timestamp, np.ndarray] = {}
+            residual_cache: dict[tuple[str, pd.Timestamp], np.ndarray] = {}
             skew_cache: dict[pd.Timestamp, dict | None] = {}
-            for row in forecasts.itertuples(index=False):
+            for row in evaluation_forecasts.itertuples(index=False):
                 origin = pd.Timestamp(row.origin_time)
                 kappa = max(float(row.kappa_return_variance_to_rv), 1e-8)
-                residuals = residual_cache.get(origin)
+                cache_key = (row.model, origin)
+                residuals = residual_cache.get(cache_key)
                 if residuals is None:
                     residuals = _residual_pool(
-                        daily,
+                        forecasts,
+                        row.model,
                         origin,
-                        kappa,
+                        int(horizon),
                         int(research["risk"]["fhs_window"]),
                     )
-                    residual_cache[origin] = residuals
+                    residual_cache[cache_key] = residuals
                 if len(residuals) < 30:
                     skipped[f"{symbol}:h{horizon}:{row.model}:{origin}"] = "fewer than 30 standardized residuals"
                     continue
                 sigma = float(np.sqrt(max(kappa * float(row.rv_forecast), np.finfo(float).tiny)))
                 if horizon == 1:
-                    methods = ["param_normal", "param_t", "param_skewt", "fhs", "evt"]
+                    methods = ["param_normal", "param_t", "param_skewt", "fhs", "evt", "quantile"]
                     confidences = research["risk"]["confidence"]
                 elif horizon == 7:
                     methods = ["fhs"]
@@ -190,11 +232,15 @@ def main() -> None:
                                 "target_start": row.target_start,
                                 "target_end": row.target_end,
                                 "actual_loss_percent": -float(row.y_cum_return) if pd.notna(row.y_cum_return) else np.nan,
+                                "data_version": row.data_version,
+                                "config_hash": row.config_hash,
+                                "evaluation_scope": f"pilot_last_{args.last_origins}_origins" if args.last_origins else "full_oos",
                                 "confidence": float(confidence),
                                 "method": method,
                                 "sigma_daily_percent": sigma,
                                 **result,
                                 "reliability": "descriptive_only" if horizon == 30 else result.get("reliability", "estimated"),
+                                "volatility_path_assumption": "flat_daily_sigma" if horizon > 1 else "single_day_sigma",
                             })
                         except Exception as exc:
                             skipped[f"{symbol}:h{horizon}:{row.model}:{origin}:{method}:{confidence}"] = (
@@ -231,17 +277,26 @@ def main() -> None:
                     "warning": "Small effective sample; no Kupiec or Christoffersen conclusion",
                 })
             else:
-                risk_summary["offset_backtests"] = [
-                    var_backtest(
-                        group["actual_loss_percent"].to_numpy(),
-                        group["var_loss_percent"].to_numpy(),
-                        float(confidence),
-                        horizon=int(horizon),
-                        offset=offset,
-                    )
-                    for offset in range(int(horizon))
-                    if int(horizon) == 1 or float(confidence) < 0.99
-                ]
+                offset_results = []
+                for offset in range(int(horizon)):
+                    if int(horizon) > 1 and float(confidence) >= 0.99:
+                        continue
+                    try:
+                        offset_results.append(var_backtest(
+                            group["actual_loss_percent"].to_numpy(),
+                            group["var_loss_percent"].to_numpy(),
+                            float(confidence),
+                            horizon=int(horizon),
+                            offset=offset,
+                        ))
+                    except Exception as exc:
+                        offset_results.append({
+                            "horizon_days": int(horizon),
+                            "offset": offset,
+                            "status": "error",
+                            "error": f"{type(exc).__name__}: {exc}",
+                        })
+                risk_summary["offset_backtests"] = offset_results
             try:
                 risk_summary["es_evaluation"] = es_backtest(
                     group["actual_loss_percent"],
@@ -255,6 +310,7 @@ def main() -> None:
 
     payload = {
         "as_of_utc": research["as_of_utc"],
+        "evaluation_scope": f"pilot_last_{args.last_origins}_origins" if args.last_origins else "full_oos",
         "loss_convention": "positive percentage loss, L=-cumulative close-to-close return",
         "horizons_days": horizons,
         "fhs_paths": paths,

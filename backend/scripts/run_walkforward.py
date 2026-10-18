@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from app.core.config import load_settings  # noqa: E402
 from app.core.research_config import load_research_config  # noqa: E402
+from app.core.seeds import set_global_seed  # noqa: E402
 from app.core.versioning import sha256_file  # noqa: E402
 from app.features.dataset import DatasetSpec, build_dataset  # noqa: E402
 from app.evaluation.walkforward import DEFAULT_MODELS, walk_forward  # noqa: E402
@@ -28,6 +29,7 @@ def main() -> None:
     args = parser.parse_args()
     settings = load_settings()
     research = load_research_config()
+    set_global_seed(int(research["seed"]))
     symbols = [value.upper() for value in (args.symbol or research["symbols"])]
     horizons = args.horizon or research["horizons_days"]
     models = args.models or DEFAULT_MODELS
@@ -55,32 +57,55 @@ def main() -> None:
             )
             path = output_dir / f"{symbol.lower()}_h{horizon}_walkforward.parquet"
             previous = pd.DataFrame()
-            start_after = None
             if path.exists() and not args.overwrite:
                 previous = pd.read_parquet(path)
-                if not previous.empty:
-                    start_after = pd.to_datetime(previous["origin_time"], utc=True).max()
-            current, run_info = walk_forward(
-                daily=daily,
-                dataset=dataset,
-                symbol=symbol,
-                horizon=int(horizon),
-                models=models,
-                start_after=start_after,
-                data_version=manifest["data_version"],
-                config_hash=config_hash,
-            )
-            combined = pd.concat([previous, current], ignore_index=True)
+                version_invalid = not {"data_version", "config_hash"}.issubset(previous.columns)
+                if not previous.empty and not version_invalid:
+                    version_invalid = (
+                        previous[["data_version", "config_hash"]].isna().any().any()
+                        or previous["data_version"].ne(manifest["data_version"]).any()
+                        or previous["config_hash"].ne(config_hash).any()
+                    )
+                if not previous.empty and version_invalid:
+                    print(f"{symbol} h={horizon}: data/config version changed; rebuilding stored forecasts")
+                    previous = pd.DataFrame()
+            if args.overwrite:
+                previous = pd.DataFrame()
+            current_frames = []
+            run_summaries = []
+            for model in models:
+                model_previous = previous.loc[previous["model"].eq(model)] if not previous.empty else pd.DataFrame()
+                start_after = None
+                if not model_previous.empty:
+                    successful = model_previous.loc[model_previous["status"].eq("ok")]
+                    if not successful.empty:
+                        start_after = pd.to_datetime(successful["origin_time"], utc=True).max()
+                current, run_info = walk_forward(
+                    daily=daily,
+                    dataset=dataset,
+                    symbol=symbol,
+                    horizon=int(horizon),
+                    models=[model],
+                    start_after=start_after,
+                    data_version=manifest["data_version"],
+                    config_hash=config_hash,
+                )
+                if not current.empty:
+                    current_frames.append(current)
+                run_summaries.append((model, run_info))
+            current_all = pd.concat(current_frames, ignore_index=True) if current_frames else pd.DataFrame()
+            # --overwrite clears prior rows; otherwise resume per model and preserve other models.
+            combined = pd.concat([previous, current_all], ignore_index=True)
             if not combined.empty:
                 combined = combined.drop_duplicates(["symbol", "horizon_days", "origin_time", "model"], keep="last")
                 combined = combined.sort_values(["origin_time", "model"]).reset_index(drop=True)
             temporary = path.with_suffix(".parquet.tmp")
             combined.to_parquet(temporary, index=False)
             temporary.replace(path)
-            print(
-                f"{symbol} h={horizon}: {run_info['forecast_rows']} new rows; "
-                f"{len(combined)} stored; skipped={run_info['skipped_models']}; file={path}"
-            )
+            print(f"{symbol} h={horizon}: {sum(info['forecast_rows'] for _, info in run_summaries)} new rows; {len(combined)} stored; file={path}")
+            for model, info in run_summaries:
+                if info["skipped_models"]:
+                    print(f"  {model}: skipped {info['skipped_models']}")
 
 
 if __name__ == "__main__":

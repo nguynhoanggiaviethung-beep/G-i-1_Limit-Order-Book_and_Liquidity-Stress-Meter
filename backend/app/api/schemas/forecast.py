@@ -9,4 +9,5 @@ class ForecastRequest(BaseModel):
     symbol: Literal["BTCUSDT", "ETHUSDT"]
     horizon_days: Literal[1, 7, 30] = 1
     model: str = "random_walk"
-    confidence_levels: list[float] = Field(default_factory=lambda: [0.95, 0.99])
+    mode: Literal["research", "production"] = "research"
+    confidence_levels: list[float] = Field(default_factory=lambda: [0.95, 0.975, 0.99])

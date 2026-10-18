@@ -1,0 +1,33 @@
+{
+  "as_of_utc": "2026-09-30T23:59:59Z",
+  "symbols": {
+    "BTCUSDT": {
+      "1": {
+        "horizon_days": 1,
+        "n_common_origins": 1003,
+        "models": {
+          "random_walk": {
+            "n_obs": 1003,
+            "n_forecast_floored": 14,
+            "floor_mean": 0.5045691664747626,
+            "mae": 4.032186126594162,
+            "mse": 85.19736455235011,
+            "rmse": 9.230241846904669,
+            "qlike": 0.4307314779346198,
+            "volatility_mae": 0.7158812708228379,
+            "volatility_rmse": 1.064028284148734,
+            "log_rv_mae": 0.6502900081949802,
+            "log_rv_rmse": 0.8603326255169041,
+            "r2_oos_vs_benchmark": 3.187304995166951e-05,
+            "mincer_zarnowitz": {
+              "intercept": 4.101822353638183,
+              "slope": 0.36379103773445465,
+              "joint_pvalue": 8.965517817738913e-15
+            }
+          }
+        },
+        "dm_vs_random_walk": {}
+      }
+    }
+  }
+}

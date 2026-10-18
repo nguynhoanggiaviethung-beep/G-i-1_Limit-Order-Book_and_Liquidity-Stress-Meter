@@ -27,7 +27,7 @@ class Settings:
     auto_sync_grace_seconds: int = 10
     forecast_horizon_days: int = 1
     test_fraction: float = 0.2
-    confidence_levels: tuple[float, ...] = (0.95, 0.99)
+    confidence_levels: tuple[float, ...] = (0.95, 0.975, 0.99)
 
 
 def load_settings(path: Path | str | None = None) -> Settings:
@@ -62,5 +62,5 @@ def load_settings(path: Path | str | None = None) -> Settings:
         auto_sync_grace_seconds=int(auto_sync.get("grace_seconds", 10)),
         forecast_horizon_days=int(forecast.get("horizon_days", 1)),
         test_fraction=float(forecast.get("test_fraction", 0.2)),
-        confidence_levels=tuple(float(value) for value in risk.get("confidence_levels", [0.95, 0.99])),
+        confidence_levels=tuple(float(value) for value in risk.get("confidence_levels", [0.95, 0.975, 0.99])),
     )

@@ -53,3 +53,26 @@ def forecast_variance_path(result, horizon: int) -> list[float]:
         )
     row = forecast.variance.iloc[-1]
     return [float(max(value, 0.0)) for value in row.iloc[:horizon]]
+
+
+def forecast_with_fixed_garch_parameters(returns, model_name: str, parameters, horizon: int) -> list[float]:
+    """Filter returns through the current origin with fixed parameters, then forecast."""
+    try:
+        from arch import arch_model
+    except ImportError as exc:
+        raise RuntimeError("Install arch to run GARCH models") from exc
+    if model_name not in GARCH_SPECS:
+        raise ValueError(f"Unsupported GARCH model: {model_name}")
+    spec = GARCH_SPECS[model_name]
+    model = arch_model(
+        returns,
+        mean="Constant",
+        vol=spec["vol"],
+        p=spec["p"],
+        o=spec["o"],
+        q=spec["q"],
+        dist=spec["dist"],
+        rescale=False,
+    )
+    fixed = model.fix(parameters)
+    return forecast_variance_path(fixed, horizon)

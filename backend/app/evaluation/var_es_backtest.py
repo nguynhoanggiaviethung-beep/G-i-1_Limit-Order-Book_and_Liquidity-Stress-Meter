@@ -94,13 +94,14 @@ def dq_test(hits, var, confidence: float, lags: int = 4) -> dict:
     design = np.column_stack(columns)
     fit = sm.OLS(response, design).fit()
     restriction = np.eye(design.shape[1])
-    test = fit.f_test(restriction, np.zeros(design.shape[1]))
+    test = fit.f_test((restriction, np.zeros(design.shape[1])))
     statistic = float(np.asarray(test.fvalue).squeeze() * design.shape[1])
     return {
         "n_obs": int(n),
         "lags": int(lags),
         "statistic": statistic,
-        "pvalue": float(np.asarray(test.pvalue).squeeze()),
+        "pvalue": float(chi2.sf(statistic, design.shape[1])),
+        "reference_distribution": "chi2",
     }
 
 

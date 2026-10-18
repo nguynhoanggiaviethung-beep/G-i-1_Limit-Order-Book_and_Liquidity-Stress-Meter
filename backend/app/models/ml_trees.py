@@ -33,7 +33,7 @@ def lightgbm_qlike_objective(y_true, raw_prediction):
     return gradient, hessian
 
 
-def make_lightgbm(qlike: bool = False, random_state: int = 20260930, alpha: float | None = None):
+def make_lightgbm(qlike: bool = False, random_state: int = 20260930, alpha: float | None = None, **overrides):
     try:
         from lightgbm import LGBMRegressor
     except ImportError as exc:
@@ -55,15 +55,16 @@ def make_lightgbm(qlike: bool = False, random_state: int = 20260930, alpha: floa
         kwargs.update(objective="quantile", alpha=alpha)
     elif qlike:
         kwargs.update(objective=lightgbm_qlike_objective)
+    kwargs.update(overrides)
     return LGBMRegressor(**kwargs)
 
 
-def make_xgboost(random_state: int = 20260930):
+def make_xgboost(random_state: int = 20260930, **overrides):
     try:
         from xgboost import XGBRegressor
     except ImportError as exc:
         raise RuntimeError("Install backend/requirements-optional.txt to use XGBoost") from exc
-    return XGBRegressor(
+    kwargs = dict(
         n_estimators=600,
         learning_rate=0.03,
         max_depth=3,
@@ -75,3 +76,5 @@ def make_xgboost(random_state: int = 20260930):
         random_state=random_state,
         n_jobs=-1,
     )
+    kwargs.update(overrides)
+    return XGBRegressor(**kwargs)

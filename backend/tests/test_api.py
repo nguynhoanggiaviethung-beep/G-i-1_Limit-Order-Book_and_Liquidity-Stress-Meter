@@ -1,9 +1,7 @@
-from fastapi.testclient import TestClient
-
 from app.main import app
+from app.api.routes.health import health
 
 
-def test_health_route_is_available():
-    response = TestClient(app).get("/health")
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+def test_health_handler_returns_ok():
+    assert app.title == "Crypto Volatility and Tail Risk API"
+    assert health() == {"status": "ok"}

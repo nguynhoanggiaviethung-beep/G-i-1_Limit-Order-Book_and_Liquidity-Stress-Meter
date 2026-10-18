@@ -21,4 +21,5 @@ forecast:
 risk:
   confidence_levels:
     - 0.95
+    - 0.975
     - 0.99

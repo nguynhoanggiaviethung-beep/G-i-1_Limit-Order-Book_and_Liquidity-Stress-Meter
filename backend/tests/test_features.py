@@ -16,4 +16,7 @@ def test_returns_and_daily_realized_variance_are_time_ordered():
     assert returns.iloc[0]["open_time"] == pd.Timestamp("2020-01-01T00:00Z")
     rv = daily_realized_volatility(frame)
     assert rv.loc[0, "observations"] == 2
-    assert rv.loc[0, "realized_variance"] > 0
+    # A partial date is diagnostic only and must never become a training target.
+    assert pd.isna(rv.loc[0, "realized_variance"])
+    assert rv.loc[0, "rv_partial"] > 0
+    assert not rv.loc[0, "is_complete_day"]

@@ -1,5 +1,5 @@
 # Frozen research design from Code Plan v3. Do not change after OOS evaluation.
-as_of_utc: "2026-09-30T23:59:59Z"
+as_of_utc: "2026-10-01T00:00:00Z"
 symbols: [BTCUSDT, ETHUSDT]
 sampling:
   intraday: 5m
@@ -20,6 +20,7 @@ windows:
   initial_train_end: "2022-12-31"
   validation_start: "2023-01-01"
   validation_end: "2023-12-31"
+  burn_in_start: "2019-01-01"
   oos_start: "2024-01-01"
   oos_end: as_of
   scheme: expanding
@@ -37,6 +38,7 @@ tuning:
   folds: 5
   embargo_days: 29
   retune_every_days: 90
+  max_candidates_per_model: 6
 evaluation:
   loss_rv: qlike
   loss_risk: fz0
