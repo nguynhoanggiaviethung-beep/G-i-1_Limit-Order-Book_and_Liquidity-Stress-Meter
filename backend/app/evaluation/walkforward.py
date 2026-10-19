@@ -12,6 +12,7 @@ import pandas as pd
 from app.core.research_config import load_research_config
 from app.evaluation.tuning import tune_hyperparameters
 from app.models.benchmark import ewma_forecast, random_walk_forecast, rolling_mean_forecast
+from app.models.deep_learning import DEEP_LEARNING_MODELS, DeepSequenceRegressor
 from app.models.garch import fit_garch_family, forecast_with_fixed_garch_parameters
 from app.models.har import HAR_FEATURE_SETS, make_har_model
 from app.models.ml_linear import make_elasticnet
@@ -30,11 +31,12 @@ DEFAULT_MODELS = (
     "random_walk", "rolling_mean_7", "rolling_mean_30", "ewma_094",
     "har", "har_log", "har_j", "har_cj", "shar", "harq", "elasticnet", "random_forest",
     "garch_t", "gjr_t", "egarch_t", "garch_skewt",
-    "lightgbm_l2", "lightgbm_qlike", "xgboost",
+    "lightgbm_l2", "lightgbm_qlike", "xgboost", *DEEP_LEARNING_MODELS,
 )
 BENCHMARK_MODELS = {"random_walk", "rolling_mean_7", "rolling_mean_30", "ewma_094"}
 GARCH_MODELS = {"garch_t", "gjr_t", "egarch_t", "garch_skewt"}
-OPTIONAL_MODELS = {"lightgbm_l2", "lightgbm_qlike", "xgboost"}
+OPTIONAL_MODELS = {"lightgbm_l2", "lightgbm_qlike", "xgboost", *DEEP_LEARNING_MODELS}
+LOG_TARGET_MODELS = {"elasticnet", "lightgbm_l2", "xgboost"}
 
 
 @dataclass
@@ -46,6 +48,7 @@ class _FitState:
     kappa: float | None = None
     log_target: bool = False
     residual_variance: float = 0.0
+    variance_floor: float = np.finfo(float).tiny
     hyperparameters: dict | None = None
 
 
@@ -67,6 +70,8 @@ def _make_estimator(model: str, seed: int, hyperparameters: dict | None = None):
         return make_lightgbm(qlike=True, random_state=seed, **hyperparameters), None
     if model == "xgboost":
         return make_xgboost(random_state=seed, **hyperparameters), None
+    if model in DEEP_LEARNING_MODELS:
+        return DeepSequenceRegressor(model_name=model, random_state=seed, **hyperparameters), None
     raise ValueError(f"Unknown fitted model: {model}")
 
 
@@ -85,16 +90,38 @@ def _fit_model(
     valid = y.notna() & x[columns].notna().all(axis=1)
     if int(valid.sum()) < 100:
         raise ValueError(f"Too few complete expanding-window samples for {model}: {int(valid.sum())}")
-    fit_y = np.log(np.maximum(y.loc[valid].to_numpy(dtype=float), np.finfo(float).tiny)) if model == "elasticnet" else y.loc[valid]
-    estimator.fit(x.loc[valid, columns], fit_y)
+    if model in DEEP_LEARNING_MODELS:
+        valid_x = x.loc[valid, columns].astype(float)
+        valid_y = y.loc[valid].to_numpy(dtype=float)
+        timestamps = pd.DatetimeIndex(pd.to_datetime(valid_x.index, utc=True))
+        lookback = estimator.lookback
+        sequences, sequence_targets = [], []
+        for end in range(lookback - 1, len(valid_x)):
+            start = end - lookback + 1
+            window_times = timestamps[start : end + 1]
+            if len(window_times) != lookback or not np.all(np.diff(window_times.asi8) == pd.Timedelta(days=1).value):
+                continue
+            sequences.append(valid_x.iloc[start : end + 1].to_numpy(dtype=np.float32))
+            sequence_targets.append(max(float(valid_y[end]), np.finfo(float).tiny))
+        if len(sequence_targets) < 30:
+            raise ValueError(f"Too few contiguous sequences for {model}: {len(sequence_targets)}")
+        estimator.fit(np.stack(sequences), np.asarray(sequence_targets, dtype=float))
+        n_train = len(sequence_targets)
+    else:
+        fit_y = np.log(np.maximum(y.loc[valid].to_numpy(dtype=float), np.finfo(float).tiny)) if model in LOG_TARGET_MODELS else y.loc[valid]
+        estimator.fit(x.loc[valid, columns], fit_y)
+        n_train = int(valid.sum())
     residual_variance = 0.0
-    if model == "elasticnet":
+    if model in LOG_TARGET_MODELS:
         residuals = fit_y - np.asarray(estimator.predict(x.loc[valid, columns]), dtype=float)
         residual_variance = float(np.var(residuals, ddof=1)) if len(residuals) > 1 else 0.0
+    variance_floor = np.finfo(float).tiny
+    if model in LOG_TARGET_MODELS | {"lightgbm_qlike"}:
+        variance_floor = max(float(y.loc[valid].quantile(0.01)), np.finfo(float).tiny)
     return _FitState(
-        estimator, fit_time, tuple(columns), int(valid.sum()),
-        log_target=model == "elasticnet", residual_variance=residual_variance,
-        hyperparameters=hyperparameters or {},
+        estimator, fit_time, tuple(columns), n_train,
+        log_target=model in LOG_TARGET_MODELS, residual_variance=residual_variance,
+        variance_floor=variance_floor, hyperparameters=hyperparameters or {},
     )
 
 
@@ -172,6 +199,7 @@ def walk_forward(
         "lightgbm_l2": int(configured["trees"]),
         "lightgbm_qlike": int(configured["trees"]),
         "xgboost": int(configured["trees"]),
+        **{name: int(configured.get("dl", 30)) for name in DEEP_LEARNING_MODELS},
         **{name: int(configured["garch"]) for name in GARCH_MODELS},
     }
     states: dict[str, _FitState] = {}
@@ -295,12 +323,19 @@ def walk_forward(
                     columns = list(state.feature_columns)
                     if current_x[columns].isna().any(axis=None):
                         raise ValueError("Current point-in-time features are incomplete")
-                    prediction = float(np.asarray(state.estimator.predict(current_x[columns])).reshape(-1)[0])
+                    if model in DEEP_LEARNING_MODELS:
+                        sequence = all_x.loc[all_x.index <= origin, columns].tail(state.estimator.lookback)
+                        if len(sequence) != state.estimator.lookback:
+                            raise ValueError("Insufficient lookback history for deep-learning forecast")
+                        prediction_input = sequence.to_numpy(dtype=np.float32)[None, :, :]
+                    else:
+                        prediction_input = current_x[columns]
+                    prediction = float(np.asarray(state.estimator.predict(prediction_input)).reshape(-1)[0])
                     if model == "lightgbm_qlike":
                         prediction = float(np.exp(np.clip(prediction, -30, 30)))
                     elif state.log_target:
                         prediction = float(np.exp(np.clip(prediction + 0.5 * state.residual_variance, -30, 30)))
-                    forecast = max(prediction, np.finfo(float).tiny)
+                    forecast = max(prediction, state.variance_floor)
                     fitted_at, n_train, model_kappa = state.fitted_at, state.n_train, kappa
                 if should_emit:
                     rows.append({

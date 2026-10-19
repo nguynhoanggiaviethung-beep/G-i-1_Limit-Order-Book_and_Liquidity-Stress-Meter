@@ -16,6 +16,7 @@ from app.models.ml_trees import make_lightgbm, make_random_forest, make_xgboost
 
 
 ROOT = Path(__file__).resolve().parents[3]
+LOG_TARGET_MODELS = {"elasticnet", "lightgbm_l2", "xgboost"}
 
 
 def _candidates(model: str, seed: int, cap: int) -> list[dict]:
@@ -77,10 +78,10 @@ def tune_hyperparameters(
             if usable_train.sum() < 100 or usable_valid.sum() == 0:
                 continue
             estimator = _estimator(model, params, seed + candidate_index)
-            target_train = np.log(np.maximum(y_train.loc[usable_train], np.finfo(float).tiny)) if model == "elasticnet" else y_train.loc[usable_train]
+            target_train = np.log(np.maximum(y_train.loc[usable_train], np.finfo(float).tiny)) if model in LOG_TARGET_MODELS else y_train.loc[usable_train]
             estimator.fit(x_train.loc[usable_train], target_train)
             prediction = np.asarray(estimator.predict(x_valid.loc[usable_valid]), dtype=float)
-            if model == "elasticnet":
+            if model in LOG_TARGET_MODELS:
                 train_residual = target_train.to_numpy() - np.asarray(estimator.predict(x_train.loc[usable_train]), dtype=float)
                 residual_variance = float(np.var(train_residual, ddof=1)) if len(train_residual) > 1 else 0.0
                 prediction = np.exp(np.clip(prediction + 0.5 * residual_variance, -30, 30))

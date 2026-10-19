@@ -12,9 +12,41 @@ from app.evaluation.var_es_backtest import christoffersen_cc, dq_test, kupiec_uc
 from app.features.dataset import DatasetSpec, build_dataset
 from app.evaluation.volatility_metrics import volatility_metrics
 from app.evaluation.tuning import tune_hyperparameters
-from app.evaluation.walkforward import walk_forward
+from app.evaluation.walkforward import _fit_model, walk_forward
 from app.api.schemas.forecast import ForecastRequest
 from app.services import forecast_service
+
+
+@pytest.mark.parametrize("model_name", ["lightgbm_l2", "xgboost"])
+def test_variance_tree_models_train_on_log_target(monkeypatch, model_name):
+    class CaptureEstimator:
+        def fit(self, x, y):
+            self.target = np.asarray(y, dtype=float)
+            self.prediction = float(np.mean(self.target))
+
+        def predict(self, x):
+            return np.full(len(x), self.prediction)
+
+    estimator = CaptureEstimator()
+    monkeypatch.setattr(
+        "app.evaluation.walkforward._make_estimator",
+        lambda model, seed, hyperparameters=None: (estimator, None),
+    )
+    index = pd.date_range("2020-01-01", periods=150, freq="D", tz="UTC")
+    x = pd.DataFrame({name: np.linspace(0.1, 1.0, len(index)) for name in (
+        "ln_rv_lag_1", "ln_rv_mean_7", "ln_rv_mean_30", "bpv_share", "jump_share",
+        "close_ret", "hl_range", "ln_volume", "ln_turnover", "ln_trade_count",
+        "taker_buy_ratio", "day_of_week", "is_weekend",
+    )}, index=index)
+    y = pd.Series(np.linspace(0.01, 4.0, len(index)), index=index)
+
+    state = _fit_model(model_name, x, y, 1, index[-1])
+
+    np.testing.assert_allclose(estimator.target, np.log(y.to_numpy()))
+    assert state.log_target
+    assert np.isfinite(state.residual_variance)
+    assert state.residual_variance >= 0
+    assert state.variance_floor == pytest.approx(y.quantile(0.01))
 
 
 def _daily_frame(days: int = 100) -> pd.DataFrame:

@@ -28,6 +28,16 @@ PyTorch là tùy chọn riêng cho các thử nghiệm deep learning, hiện ch�
 & $PY -m pip install -r requirements-dl.txt
 ```
 
+Tải nguồn ngoại sinh để khảo sát riêng (không thay đổi snapshot baseline). Binance futures không cần API key; FRED cần API key đặt trong biến môi trường PowerShell:
+
+```powershell
+$env:FRED_API_KEY = "<FRED API key của bạn>"
+& $PY backend\scripts\fetch_external_data.py
+& $PY backend\scripts\build_external_features.py
+```
+
+Fetcher lưu `data/external/events.parquet`; feature point-in-time tách riêng dưới `data/features/external/<as-of>/` kèm coverage report. OI/basis có thể bị loại do không đủ lịch sử.
+
 Lần tải đầu lấy lịch sử từ `2019-01-01`; các lần sau đồng bộ tiếp phần còn thiếu và lưu nến đóng vào `data/processed/`. Dữ liệu thô và Parquet lớn nằm ngoài Git. Khi FastAPI đang chạy, bộ đồng bộ nền tiếp tục cập nhật mỗi 5 phút; xem trạng thái tại `http://127.0.0.1:8000/api/v1/sync-status`.
 
 ## Chạy nghiên cứu
@@ -47,7 +57,7 @@ Một lượt đầy đủ có thể chạy lâu: có nhiều symbol/horizon, GA
 
 Kết quả được ghi dưới `results/forecasts/`, `results/metrics/`, `results/tables/` và `results/figures/`. Pipeline xuất các bảng T1–T11, SVG F1–F9, regime metrics, volatility targeting, risk budget và dynamic margin. Kiểm tra độ phủ dữ liệu trong `data/snapshots/<as-of>/manifest.json` và `results/metrics/snapshot_quality.json`; các khoảng thiếu được giữ nguyên, không nội suy.
 
-Workspace hiện có ma trận forecast RV baseline cho BTCUSDT/ETHUSDT × 1/7/30 ngày, gồm 16 model cổ điển mỗi chuỗi và 1,005 origin OOS mỗi model. `risk_forecasts.parquet` có 707,520 dòng `full_oos`; kết quả 30 ngày vẫn chỉ mang tính mô tả. Bảng T1–T11 và hình F1–F9 được tạo từ các artifact này cùng kết quả robustness. Quantile VaR/ES trực tiếp chưa chạy; LightGBM/XGBoost chưa cài nên các model đó được bỏ qua có thông báo. Dùng pipeline đầy đủ sau khi cài package tùy chọn để bổ sung các kết quả còn thiếu.
+Workspace có ma trận forecast RV cho BTCUSDT/ETHUSDT × 1/7/30 ngày. Mỗi chuỗi có 1,005 origin OOS cho 16 model cổ điển và ba model cây (`lightgbm_l2`, `lightgbm_qlike`, `xgboost`). Forecast quantile trực tiếp (`linear_qr`, `lightgbm_quantile`, `qrf`) được lưu riêng trong `results/forecasts/quantile_forecasts.parquet` và được đưa vào đánh giá VaR/ES. Các bảng T1–T11 và hình F1–F9 được tái tạo từ forecast, risk và robustness artifacts. Kết quả horizon 30 ngày vẫn chỉ mang tính mô tả do số quan sát kiểm định hiệu dụng nhỏ. LSTM, GRU và Transformer có code tùy chọn nhưng chưa có forecast metrics nếu chưa cài PyTorch và chạy walk-forward cho các model này.
 
 ## Chạy API và xem dự báo
 
@@ -93,6 +103,7 @@ Invoke-RestMethod -Method Post `
 - Nến 5 phút được xem là hoàn chỉnh khi có đủ 288 nến và 288 lợi suất liên tiếp trong ngày UTC. Ngày lỗi/gap không trở thành target.
 - Risk 7/30 ngày dùng giả định đường sigma ngày phẳng trong FHS; kết quả 30 ngày chỉ mang tính mô tả do mẫu kiểm định hiệu dụng nhỏ.
 - VaR/ES gồm các phương pháp phân phối, FHS/EVT và mô hình quantile trực tiếp (`linear_qr`, `lightgbm_quantile`, `qrf`). Với quantile model, VaR là quantile có điều kiện; ES là trung bình đuôi loss trong tập huấn luyện tại thời điểm forecast, nên được ghi nhận là ước lượng đuôi thực nghiệm. Quantile và robustness dùng cấu hình riêng, không sửa `config/research.yaml`.
-- Biến ngoại sinh phái sinh/vĩ mô không được bật vì chưa có nguồn lịch sử point-in-time đã kiểm chứng. Deep learning được hoãn; `requirements-dl.txt` chỉ là môi trường tùy chọn, chưa có kết quả DL trong pipeline. Không tự tạo hoặc nội suy dữ liệu ngoài.
+- Có adapter tùy chọn cho funding, open interest, basis và macro FRED; chạy lệnh bên dưới để lưu event và tạo feature riêng. Feature chỉ được dùng khi còn trong thời hạn dữ liệu và đạt ngưỡng coverage; file feature ngoại sinh không được trộn vào snapshot baseline. VIX lấy từ `VIXCLS`; `DTWEXBGS` là proxy USD diện rộng, không phải chỉ số ICE DXY. Binance chỉ cung cấp lịch sử basis/open interest gần đây nên các biến này thường bị coverage gate loại khỏi đánh giá nhiều năm.
+- LSTM, GRU và Transformer đã có model code dạng tùy chọn. Cài PyTorch bằng `requirements-dl.txt` trước khi chọn các model này; chúng không được ghi nhận là đã có forecast result cho tới khi chạy xong full walk-forward.
 - Bài kiểm tra chạy bằng `& $PY -m pytest -c backend\pytest.ini backend\tests --basetemp .pytest-tmp`. CI tự chạy test trên Python 3.11.
 - `data/`, model files và kết quả Parquet lớn không commit. Chỉ commit code, cấu hình và báo cáo nhỏ đã rà soát.

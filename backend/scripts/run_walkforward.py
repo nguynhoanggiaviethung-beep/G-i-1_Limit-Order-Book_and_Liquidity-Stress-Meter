@@ -18,7 +18,7 @@ from app.core.research_config import load_research_config  # noqa: E402
 from app.core.seeds import set_global_seed  # noqa: E402
 from app.core.versioning import sha256_file  # noqa: E402
 from app.features.dataset import DatasetSpec, build_dataset  # noqa: E402
-from app.evaluation.walkforward import DEFAULT_MODELS, OPTIONAL_MODELS, walk_forward  # noqa: E402
+from app.evaluation.walkforward import DEEP_LEARNING_MODELS, DEFAULT_MODELS, OPTIONAL_MODELS, walk_forward  # noqa: E402
 
 
 def main() -> None:
@@ -27,6 +27,10 @@ def main() -> None:
     parser.add_argument("--horizon", type=int, action="append")
     parser.add_argument("--model", action="append", dest="models")
     parser.add_argument("--overwrite", action="store_true", help="Rebuild outputs from OOS start")
+    parser.add_argument(
+        "--rebuild-models", action="store_true",
+        help="Recompute only the selected models from OOS start while preserving other models",
+    )
     args = parser.parse_args()
     settings = load_settings()
     research = load_research_config()
@@ -36,9 +40,15 @@ def main() -> None:
     models = args.models or DEFAULT_MODELS
     available_models = []
     for model in models:
-        package = "lightgbm" if model.startswith("lightgbm") else "xgboost" if model == "xgboost" else None
+        package = (
+            "lightgbm" if model.startswith("lightgbm")
+            else "xgboost" if model == "xgboost"
+            else "torch" if model in DEEP_LEARNING_MODELS
+            else None
+        )
         if model in OPTIONAL_MODELS and package and importlib.util.find_spec(package) is None:
-            print(f"SKIP {model}: install backend/requirements-optional.txt to enable it", flush=True)
+            requirements = "requirements-dl.txt" if package == "torch" else "requirements-ml.txt"
+            print(f"SKIP {model}: install {requirements} to enable it", flush=True)
             continue
         available_models.append(model)
     models = available_models
@@ -83,7 +93,11 @@ def main() -> None:
             current_frames = []
             run_summaries = []
             for model in models:
-                model_previous = previous.loc[previous["model"].eq(model)] if not previous.empty else pd.DataFrame()
+                model_previous = (
+                    previous.loc[previous["model"].eq(model)]
+                    if not previous.empty and not args.rebuild_models
+                    else pd.DataFrame()
+                )
                 start_after = None
                 if not model_previous.empty:
                     successful = model_previous.loc[model_previous["status"].eq("ok")]
