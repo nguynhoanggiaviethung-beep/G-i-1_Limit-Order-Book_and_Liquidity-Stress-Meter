@@ -59,6 +59,23 @@ Kết quả được ghi dưới `results/forecasts/`, `results/metrics/`, `resu
 
 Workspace có ma trận forecast RV cho BTCUSDT/ETHUSDT × 1/7/30 ngày. Mỗi chuỗi có 1,005 origin OOS cho 16 model cổ điển và ba model cây (`lightgbm_l2`, `lightgbm_qlike`, `xgboost`). Forecast quantile trực tiếp (`linear_qr`, `lightgbm_quantile`, `qrf`) được lưu riêng trong `results/forecasts/quantile_forecasts.parquet` và được đưa vào đánh giá VaR/ES. Các bảng T1–T11 và hình F1–F9 được tái tạo từ forecast, risk và robustness artifacts. Kết quả horizon 30 ngày vẫn chỉ mang tính mô tả do số quan sát kiểm định hiệu dụng nhỏ. LSTM, GRU và Transformer có code tùy chọn nhưng chưa có forecast metrics nếu chưa cài PyTorch và chạy walk-forward cho các model này.
 
+## Chạy giao diện frontend
+
+Frontend React/TypeScript nằm trong `frontend/`. Giao diện có sáu màn hình: Tổng quan, Dự báo, Đánh giá mô hình, Rủi ro & backtest, Regime & chiến lược, Phương pháp & dữ liệu. Các bảng, hình và forecast đọc từ API backend; trình duyệt không tự tính các metric nghiên cứu. Bộ lọc được lưu trên URL để có thể chia sẻ lựa chọn hiện tại.
+
+Mở hai terminal tại thư mục repository. Terminal thứ nhất chạy backend như hướng dẫn ở phần tiếp theo. Terminal thứ hai cài và chạy frontend bằng Node.js 22 trở lên:
+
+```powershell
+cd frontend
+npm ci
+npm run api:types
+npm run dev
+```
+
+Mở [http://127.0.0.1:5173](http://127.0.0.1:5173). Vite chuyển tiếp `/api` tới backend ở `127.0.0.1:8000`; luồng giá nến đang chạy được làm mới trên giao diện mỗi 5 giây. Khi muốn backend tự phục vụ giao diện đã build, chạy `npm run build` trong `frontend/`, sau đó mở [http://127.0.0.1:8000](http://127.0.0.1:8000). Tài liệu API vẫn ở `/docs`.
+
+Sinh lại kiểu TypeScript từ OpenAPI sau khi thay đổi API bằng `npm run api:types`. Kiểm tra giao diện bằng `npm test`; Playwright/Axe có thể chạy với `npm run test:e2e` sau khi cài browser của Playwright.
+
 ## Chạy API và xem dự báo
 
 ```powershell

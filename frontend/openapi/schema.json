@@ -1,0 +1,872 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Crypto Volatility and Tail Risk API",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Health",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Health Health Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/market-data/{symbol}": {
+      "get": {
+        "tags": [
+          "market data"
+        ],
+        "summary": "Get Market Data",
+        "operationId": "get_market_data_api_v1_market_data__symbol__get",
+        "parameters": [
+          {
+            "name": "symbol",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Symbol"
+            }
+          },
+          {
+            "name": "interval",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "5m",
+              "title": "Interval"
+            }
+          },
+          {
+            "name": "start_time",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Time"
+            }
+          },
+          {
+            "name": "end_time",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Time"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 10000,
+              "minimum": 1,
+              "default": 1000,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketDataResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/forecasts": {
+      "post": {
+        "tags": [
+          "forecasts"
+        ],
+        "summary": "Create Forecast",
+        "operationId": "create_forecast_api_v1_forecasts_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ForecastRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/forecasts/history": {
+      "get": {
+        "tags": [
+          "forecasts"
+        ],
+        "summary": "Get Forecast History",
+        "operationId": "get_forecast_history_api_v1_forecasts_history_get",
+        "parameters": [
+          {
+            "name": "symbol",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Symbol"
+            }
+          },
+          {
+            "name": "model",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Model"
+            }
+          },
+          {
+            "name": "horizon_days",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "maximum": 30,
+              "minimum": 1,
+              "title": "Horizon Days"
+            }
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "research",
+              "title": "Mode"
+            }
+          },
+          {
+            "name": "risk_method",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "filtered_historical_simulation",
+              "title": "Risk Method"
+            }
+          },
+          {
+            "name": "confidence",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "default": 0.95,
+              "title": "Confidence"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 2000,
+              "minimum": 1,
+              "default": 365,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/forecasts/{forecast_id}": {
+      "get": {
+        "tags": [
+          "forecasts"
+        ],
+        "summary": "Get Forecast",
+        "operationId": "get_forecast_api_v1_forecasts__forecast_id__get",
+        "parameters": [
+          {
+            "name": "forecast_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Forecast Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/evaluation/{symbol}": {
+      "get": {
+        "tags": [
+          "evaluation"
+        ],
+        "summary": "Get Evaluation",
+        "operationId": "get_evaluation_api_v1_evaluation__symbol__get",
+        "parameters": [
+          {
+            "name": "symbol",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Symbol"
+            }
+          },
+          {
+            "name": "horizon_days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "maximum": 30,
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Horizon Days"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sync-status": {
+      "get": {
+        "tags": [
+          "data synchronization"
+        ],
+        "summary": "Get Sync Status",
+        "description": "Return the latest background Binance sync state.",
+        "operationId": "get_sync_status_api_v1_sync_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Get Sync Status Api V1 Sync Status Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/live-market-data": {
+      "get": {
+        "tags": [
+          "live market data"
+        ],
+        "summary": "Get All Live Market Data",
+        "operationId": "get_all_live_market_data_api_v1_live_market_data_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Get All Live Market Data Api V1 Live Market Data Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/live-market-data/{symbol}": {
+      "get": {
+        "tags": [
+          "live market data"
+        ],
+        "summary": "Get Live Market Data",
+        "operationId": "get_live_market_data_api_v1_live_market_data__symbol__get",
+        "parameters": [
+          {
+            "name": "symbol",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Symbol"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Live Market Data Api V1 Live Market Data  Symbol  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/regimes/{symbol}": {
+      "get": {
+        "tags": [
+          "research regimes"
+        ],
+        "summary": "Get Regime",
+        "operationId": "get_regime_api_v1_regimes__symbol__get",
+        "parameters": [
+          {
+            "name": "symbol",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Symbol"
+            }
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "research",
+                "production"
+              ],
+              "type": "string",
+              "default": "research",
+              "title": "Mode"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Regime Api V1 Regimes  Symbol  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/meta": {
+      "get": {
+        "tags": [
+          "research artifacts"
+        ],
+        "summary": "Get Meta",
+        "description": "Expose provenance and the filters supported by the current workspace.",
+        "operationId": "get_meta_api_v1_meta_get",
+        "parameters": [
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "research",
+                "production"
+              ],
+              "type": "string",
+              "default": "research",
+              "title": "Mode"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Meta Api V1 Meta Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/results/tables/{table_id}": {
+      "get": {
+        "tags": [
+          "research artifacts"
+        ],
+        "summary": "Get Result Table",
+        "description": "Serve an allowlisted T1-T11 CSV artifact without evaluating it in-browser.",
+        "operationId": "get_result_table_api_v1_results_tables__table_id__get",
+        "parameters": [
+          {
+            "name": "table_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Table Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/results/figures/{figure_id}": {
+      "get": {
+        "tags": [
+          "research artifacts"
+        ],
+        "summary": "Get Result Figure",
+        "description": "Serve an allowlisted F1-F9 SVG artifact.",
+        "operationId": "get_result_figure_api_v1_results_figures__figure_id__get",
+        "parameters": [
+          {
+            "name": "figure_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Figure Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ForecastRequest": {
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "enum": [
+              "BTCUSDT",
+              "ETHUSDT"
+            ],
+            "title": "Symbol",
+            "description": "Binance Spot symbol included in the configured study."
+          },
+          "horizon_days": {
+            "type": "integer",
+            "enum": [
+              1,
+              7,
+              30
+            ],
+            "title": "Horizon Days",
+            "description": "Direct forecast horizon in UTC days; research design supports 1, 7, or 30.",
+            "default": 1
+          },
+          "model": {
+            "type": "string",
+            "enum": [
+              "random_walk",
+              "rolling_mean_7",
+              "rolling_mean_30",
+              "ewma_094",
+              "har",
+              "har_log",
+              "har_j",
+              "har_cj",
+              "shar",
+              "harq",
+              "elasticnet",
+              "random_forest",
+              "lightgbm_l2",
+              "lightgbm_qlike",
+              "xgboost",
+              "garch_t",
+              "gjr_t",
+              "egarch_t",
+              "garch_skewt"
+            ],
+            "title": "Model",
+            "description": "Volatility model name. Optional models require backend/requirements-optional.txt.",
+            "default": "random_walk"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "research",
+              "production"
+            ],
+            "title": "Mode",
+            "description": "research loads the frozen walk-forward result; production fits a point-in-time model from the latest synchronized local Binance data.",
+            "default": "research"
+          },
+          "confidence_levels": {
+            "items": {
+              "type": "number",
+              "enum": [
+                0.95,
+                0.975,
+                0.99
+              ]
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Confidence Levels",
+            "description": "VaR/ES confidence levels supported by the current risk configuration."
+          }
+        },
+        "type": "object",
+        "required": [
+          "symbol"
+        ],
+        "title": "ForecastRequest"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "MarketCandle": {
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "title": "Symbol"
+          },
+          "interval": {
+            "type": "string",
+            "title": "Interval"
+          },
+          "open_time": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Open Time"
+          },
+          "close_time": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Close Time"
+          },
+          "open": {
+            "type": "number",
+            "title": "Open"
+          },
+          "high": {
+            "type": "number",
+            "title": "High"
+          },
+          "low": {
+            "type": "number",
+            "title": "Low"
+          },
+          "close": {
+            "type": "number",
+            "title": "Close"
+          },
+          "volume": {
+            "type": "number",
+            "title": "Volume"
+          }
+        },
+        "type": "object",
+        "required": [
+          "symbol",
+          "interval",
+          "open_time",
+          "close_time",
+          "open",
+          "high",
+          "low",
+          "close",
+          "volume"
+        ],
+        "title": "MarketCandle"
+      },
+      "MarketDataResponse": {
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "title": "Symbol"
+          },
+          "interval": {
+            "type": "string",
+            "title": "Interval"
+          },
+          "rows": {
+            "type": "integer",
+            "title": "Rows"
+          },
+          "candles": {
+            "items": {
+              "$ref": "#/components/schemas/MarketCandle"
+            },
+            "type": "array",
+            "title": "Candles"
+          }
+        },
+        "type": "object",
+        "required": [
+          "symbol",
+          "interval",
+          "rows",
+          "candles"
+        ],
+        "title": "MarketDataResponse"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}

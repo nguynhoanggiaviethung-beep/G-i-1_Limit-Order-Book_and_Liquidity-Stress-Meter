@@ -249,6 +249,135 @@ def create_production_forecast(
     }
 
 
+def get_forecast_history(
+    symbol: str,
+    model: str,
+    horizon_days: int,
+    mode: str = "research",
+    risk_method: str = "filtered_historical_simulation",
+    confidence: float = 0.95,
+    limit: int = 365,
+) -> dict:
+    """Return display-ready history; risk estimates remain sourced from saved artifacts."""
+    symbol = symbol.upper()
+    settings = load_settings()
+    if symbol not in settings.symbols:
+        raise ValueError(f"Unsupported symbol: {symbol}")
+    if horizon_days not in (1, 7, 30):
+        raise ValueError("horizon_days must be 1, 7, or 30")
+    if mode not in ("research", "production"):
+        raise ValueError("mode must be research or production")
+    if not 1 <= limit <= 2000:
+        raise ValueError("limit must be between 1 and 2000")
+
+    if mode == "production":
+        candles = load_market_data(symbol, settings.interval)
+        if candles.empty:
+            raise FileNotFoundError(f"No synchronized production candles for {symbol}")
+        daily = daily_realized_volatility(
+            candles,
+            bars_per_day=int(load_research_config()["sampling"]["bars_per_day"]),
+        )
+        daily = daily.loc[daily["is_complete_day"].fillna(False)].sort_values("utc_date").tail(limit)
+        points = []
+        for row in daily.itertuples(index=False):
+            day = pd.Timestamp(row.utc_date)
+            if day.tzinfo is None:
+                day = day.tz_localize("UTC")
+            points.append({
+                "origin_time": (day + pd.Timedelta(days=1)).isoformat(),
+                "target_end": (day + pd.Timedelta(days=1)).isoformat(),
+                "actual_rv_mean": float(row.rv),
+                "rv_forecast": None,
+                "sigma_h_approx": None,
+                "actual_return_percent": float(row.close_ret) if pd.notna(row.close_ret) else None,
+                "actual_loss_percent": None,
+                "var_loss_percent": None,
+                "expected_shortfall_loss_percent": None,
+                "status": "actual_only",
+            })
+        return {
+            "symbol": symbol,
+            "model": model,
+            "horizon_days": horizon_days,
+            "mode": mode,
+            "risk_method": risk_method,
+            "confidence": confidence,
+            "data_version": None,
+            "config_hash": sha256_file(REPOSITORY_ROOT / "config" / "research.yaml"),
+            "points": points,
+            "note": "Production chart history contains completed local market days; the current forecast is returned by POST /api/v1/forecasts.",
+        }
+
+    path = _forecast_path(symbol, horizon_days)
+    if not path.exists():
+        raise FileNotFoundError(f"No saved {horizon_days}-day forecast for {symbol}")
+    forecasts = pd.read_parquet(path)
+    selected = forecasts.loc[
+        forecasts["model"].eq(model)
+        & forecasts["status"].eq("ok")
+        & forecasts["fold"].eq("oos")
+    ].sort_values("origin_time").tail(limit)
+    if selected.empty:
+        available = sorted(forecasts.loc[forecasts["status"].eq("ok"), "model"].unique().tolist())
+        raise FileNotFoundError(f"No OOS history for {model}; available models: {available}")
+
+    risk_path = REPOSITORY_ROOT / "results" / "forecasts" / "risk_forecasts.parquet"
+    risk_by_origin: dict[str, dict] = {}
+    if risk_path.exists():
+        risks = pd.read_parquet(risk_path)
+        mask = (
+            risks["symbol"].eq(symbol)
+            & risks["model"].eq(model)
+            & risks["horizon_days"].eq(horizon_days)
+            & risks["method"].eq(risk_method)
+            & risks["confidence"].eq(confidence)
+        )
+        if "evaluation_scope" in risks.columns:
+            mask &= risks["evaluation_scope"].eq("full_oos")
+        risks = risks.loc[mask].sort_values("origin_time").drop_duplicates("origin_time", keep="last")
+        for row in risks.itertuples(index=False):
+            origin = pd.Timestamp(row.origin_time)
+            risk_by_origin[origin.isoformat()] = {
+                "actual_loss_percent": float(row.actual_loss_percent) if pd.notna(row.actual_loss_percent) else None,
+                "var_loss_percent": float(row.var_loss_percent) if pd.notna(row.var_loss_percent) else None,
+                "expected_shortfall_loss_percent": (
+                    float(row.expected_shortfall_loss_percent)
+                    if pd.notna(row.expected_shortfall_loss_percent) else None
+                ),
+                "risk_status": row.status,
+            }
+
+    points = []
+    for row in selected.itertuples(index=False):
+        origin = pd.Timestamp(row.origin_time)
+        point = {
+            "origin_time": origin.isoformat(),
+            "target_end": pd.Timestamp(row.target_end).isoformat(),
+            "actual_rv_mean": float(row.actual_rv_mean) if pd.notna(row.actual_rv_mean) else None,
+            "rv_forecast": float(row.rv_forecast),
+            "sigma_h_approx": float(row.sigma_h_approx),
+            "actual_return_percent": float(row.y_cum_return) if pd.notna(row.y_cum_return) else None,
+            "data_version": row.data_version,
+            "config_hash": row.config_hash,
+            "status": row.status,
+        }
+        point.update(risk_by_origin.get(origin.isoformat(), {}))
+        points.append(point)
+    latest = selected.iloc[-1]
+    return {
+        "symbol": symbol,
+        "model": model,
+        "horizon_days": horizon_days,
+        "mode": mode,
+        "risk_method": risk_method,
+        "confidence": confidence,
+        "data_version": latest.get("data_version"),
+        "config_hash": latest.get("config_hash"),
+        "points": points,
+    }
+
+
 def get_forecast(forecast_id: str) -> dict:
     for symbol in load_settings().symbols:
         for horizon in (1, 7, 30):
