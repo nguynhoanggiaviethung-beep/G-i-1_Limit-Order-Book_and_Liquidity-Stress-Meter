@@ -12,7 +12,7 @@ export function downloadCsv(table: CsvTable) {
   const anchor = document.createElement("a"); anchor.href = url; anchor.download = table.name; anchor.click(); URL.revokeObjectURL(url);
 }
 
-export function filterTable(table: CsvTable, filters: { symbol: string; horizon: number; model: string; confidence: number }): CsvTable {
+export function filterTable(table: CsvTable, filters: { symbol: string; horizon: number; model: string; confidence: number }, filterModel = true): CsvTable {
   const headers = new Set(table.headers.map((header) => header.toLowerCase()));
   return {
     ...table,
@@ -20,16 +20,24 @@ export function filterTable(table: CsvTable, filters: { symbol: string; horizon:
       const lower = Object.fromEntries(Object.entries(row).map(([key, value]) => [key.toLowerCase(), value]));
       if (headers.has("symbol") && lower.symbol && lower.symbol !== filters.symbol) return false;
       if (headers.has("horizon_days") && lower.horizon_days && Number(lower.horizon_days) !== filters.horizon) return false;
-      if (headers.has("model") && lower.model && lower.model !== filters.model) return false;
+      if (filterModel && headers.has("model") && lower.model && lower.model !== filters.model) return false;
       if (headers.has("confidence") && lower.confidence && Math.abs(Number(lower.confidence) - filters.confidence) > 0.0001) return false;
       return true;
     }),
   };
 }
 
-export function DataTable({ table, maxHeight = 460 }: { table: CsvTable; maxHeight?: number }) {
-  const { filters } = useFilters();
-  const visibleTable = filterTable(table, filters);
+export function DataTable({ table, maxHeight = 460, filterModel = true, descriptive = false, sortBy }: { table: CsvTable; maxHeight?: number; filterModel?: boolean; descriptive?: boolean; sortBy?: string }) {
+  const { filters, resolvedModel } = useFilters();
+  const visible = filterTable(table, { ...filters, model: resolvedModel ?? "" }, filterModel);
+  const preparedTable = descriptive ? {
+    ...visible,
+    headers: visible.headers.filter((header) => !/(pvalue|p_value|holm_reject|joint_pvalue|mincer_zarnowitz)/i.test(header)),
+  } : visible;
+  const visibleTable = sortBy ? {
+    ...preparedTable,
+    rows: [...preparedTable.rows].sort((a, b) => Number(a[sortBy]) - Number(b[sortBy])),
+  } : preparedTable;
   const columns = useMemo<ColumnDef<Record<string, string>>[]>(() => visibleTable.headers.map((header) => ({
     accessorKey: header,
     header: header.replaceAll("_", " "),

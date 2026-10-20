@@ -6,11 +6,14 @@ export type AppMode = ForecastRequest["mode"];
 export type ForecastModel = ForecastRequest["model"];
 export type Horizon = ForecastRequest["horizon_days"];
 export type Confidence = NonNullable<ForecastRequest["confidence_levels"]>[number];
+export type AudienceMode = "basic" | "expert";
+export type ModelSelection = ForecastModel | "auto";
 
 export interface Filters {
+  audience: AudienceMode;
   symbol: MarketSymbol;
   horizon: Horizon;
-  model: ForecastModel;
+  model: ModelSelection;
   confidence: Confidence;
   mode: AppMode;
 }
@@ -56,6 +59,10 @@ export interface ForecastResponse {
   var_es: RiskForecast[] | null;
   note?: string;
   risk_unit?: string;
+  rv_percentile?: number | null;
+  rv_level?: "low" | "moderate" | "high" | "very_high" | null;
+  rv_reference_n?: number;
+  rv_reference_as_of_utc?: string | null;
 }
 
 export interface ForecastPoint {

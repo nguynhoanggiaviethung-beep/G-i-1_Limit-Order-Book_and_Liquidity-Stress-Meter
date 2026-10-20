@@ -7,18 +7,25 @@ import { ForecastPlot } from "../components/charts/ForecastPlot";
 import { ApiState, PageIntro, Provenance, SectionHeader, StatTile } from "../components/PageParts";
 import { formatDate, formatNumber, formatPercent } from "../components/format";
 import { riskForConfidence } from "../api/client";
+import { BasicOverviewPage } from "./basic";
 
 export function OverviewPage() {
   const { filters } = useFilters();
+  return filters.audience === "basic" ? <BasicOverviewPage /> : <ExpertOverviewPage />;
+}
+
+function ExpertOverviewPage() {
+  const { filters, resolvedModel } = useFilters();
   const live = useLiveMarket(filters.symbol);
   const regime = useRegime(filters.symbol, filters.mode);
   const meta = useMeta(filters.mode);
-  const researchForecast = useForecast(filters, filters.mode === "research");
+  const researchForecast = useForecast(filters, resolvedModel, filters.mode === "research");
   const mutation = useForecastMutation();
-  const history = useForecastHistory(filters, filters.mode === "research");
+  const history = useForecastHistory(filters, resolvedModel, filters.mode === "research");
   const forecast = filters.mode === "research" ? researchForecast.data : mutation.data;
-  const risk = riskForConfidence(forecast?.var_es, filters.confidence);
-  const request: ForecastRequest = { symbol: filters.symbol, model: filters.model, horizon_days: filters.horizon, mode: filters.mode, confidence_levels: [filters.confidence] };
+  const risk = riskForConfidence(forecast?.var_es, filters.confidence, "filtered_historical_simulation")
+    ?? riskForConfidence(forecast?.var_es, filters.confidence);
+  const request: ForecastRequest = { symbol: filters.symbol, model: resolvedModel ?? "har", horizon_days: filters.horizon, mode: filters.mode, confidence_levels: [0.95, 0.975, 0.99] };
 
   return <div className="page-stack">
     <PageIntro eyebrow="BẢNG ĐIỀU KHIỂN / 01" title="Tổng quan thị trường" description="Biến động, dự báo và rủi ro đuôi từ dữ liệu nghiên cứu đóng băng hoặc nguồn Binance đang cập nhật." actions={<Provenance />} />
@@ -31,7 +38,7 @@ export function OverviewPage() {
     <div className="dashboard-banner">
       <div className="banner-icon"><Waves size={19} /></div>
       <div><strong>{filters.mode === "research" ? "Nghiên cứu walk-forward" : "Dữ liệu production rolling"}</strong><p>{filters.mode === "research" ? "Forecast đọc từ kết quả out-of-sample tại mốc snapshot; số thực tế chưa quan sát được sẽ để trống." : "Production dùng các ngày UTC hoàn chỉnh gần nhất. Mỗi yêu cầu forecast chạy mô hình trên dữ liệu đã đồng bộ ở máy này."}</p></div>
-      {filters.mode === "production" && <button className="primary-button" onClick={() => mutation.mutate(request)} disabled={mutation.isPending}><RefreshCw size={15} className={mutation.isPending ? "spin" : ""} />{mutation.isPending ? "Đang tính…" : "Tạo forecast"}</button>}
+      {filters.mode === "production" && <button className="primary-button" onClick={() => mutation.mutate(request)} disabled={mutation.isPending || !resolvedModel}><RefreshCw size={15} className={mutation.isPending ? "spin" : ""} />{mutation.isPending ? "Đang tính…" : "Tạo forecast"}</button>}
     </div>
     <SectionHeader title="Diễn biến dự báo" note={`${filters.symbol} · ${filters.model} · horizon ${filters.horizon} ngày`} />
     <ApiState loading={history.isLoading} error={filters.mode === "research" ? history.error : undefined}>

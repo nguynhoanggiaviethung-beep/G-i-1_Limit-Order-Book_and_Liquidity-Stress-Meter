@@ -59,6 +59,45 @@ def _risk_for_forecast(
     return selected[[column for column in columns if column in selected]].to_dict("records")
 
 
+def _volatility_context(
+    symbol: str,
+    model: str,
+    horizon_days: int,
+    rv_forecast: float,
+    as_of: pd.Timestamp,
+) -> dict:
+    """Rank a forecast against prior OOS forecasts for the same model and horizon."""
+    path = _forecast_path(symbol, horizon_days)
+    if not path.exists():
+        return {"rv_percentile": None, "rv_level": None, "rv_reference_n": 0, "rv_reference_as_of_utc": None}
+    forecasts = pd.read_parquet(path)
+    selected = forecasts.loc[
+        forecasts["model"].eq(model)
+        & forecasts["status"].eq("ok")
+    ].copy()
+    if "fold" in selected:
+        selected = selected.loc[selected["fold"].eq("oos")]
+    origins = pd.to_datetime(selected["origin_time"], utc=True)
+    cutoff = pd.Timestamp(as_of)
+    cutoff = cutoff.tz_localize("UTC") if cutoff.tzinfo is None else cutoff.tz_convert("UTC")
+    selected = selected.loc[origins.le(cutoff)]
+    values = pd.to_numeric(selected["rv_forecast"], errors="coerce").dropna()
+    reference_n = int(values.shape[0])
+    reference_as_of = pd.to_datetime(selected["origin_time"], utc=True).max() if reference_n else None
+    context = {
+        "rv_percentile": None,
+        "rv_level": None,
+        "rv_reference_n": reference_n,
+        "rv_reference_as_of_utc": reference_as_of.isoformat() if reference_as_of is not None and pd.notna(reference_as_of) else None,
+    }
+    if reference_n < 30 or not np.isfinite(rv_forecast):
+        return context
+    percentile = float((values <= rv_forecast).mean() * 100.0)
+    context["rv_percentile"] = percentile
+    context["rv_level"] = "low" if percentile <= 25 else "moderate" if percentile <= 50 else "high" if percentile <= 75 else "very_high"
+    return context
+
+
 def create_forecast(symbol: str, model: str, horizon_days: int, confidence_levels: list[float]) -> dict:
     symbol = symbol.upper()
     settings = load_settings()
@@ -77,6 +116,7 @@ def create_forecast(symbol: str, model: str, horizon_days: int, confidence_level
         raise FileNotFoundError(f"No successful forecast for model {model}; available models: {available}")
     row = selected.sort_values("origin_time").iloc[-1]
     origin = pd.Timestamp(row["origin_time"])
+    rv_forecast = float(row["rv_forecast"])
     return {
         "forecast_id": f"{symbol.lower()}-h{horizon_days}-{model}-{origin.strftime('%Y%m%d')}",
         "mode": "research",
@@ -89,8 +129,9 @@ def create_forecast(symbol: str, model: str, horizon_days: int, confidence_level
         "data_version": row.get("data_version"),
         "config_hash": row.get("config_hash"),
         "actual_rv_mean": None if pd.isna(row["actual_rv_mean"]) else float(row["actual_rv_mean"]),
-        "rv_forecast": float(row["rv_forecast"]),
+        "rv_forecast": rv_forecast,
         "sigma_h_approx": float(row["sigma_h_approx"]),
+        **_volatility_context(symbol, model, horizon_days, rv_forecast, origin),
         "status": row["status"],
         "var_es": _risk_for_forecast(
             symbol, model, horizon_days, origin, confidence_levels,
@@ -204,6 +245,7 @@ def create_production_forecast(
 
     rv_forecast = max(float(rv_forecast), np.finfo(float).tiny)
     sigma_h = float(np.sqrt(max(kappa * horizon_days * rv_forecast, np.finfo(float).tiny)))
+    rv_context = _volatility_context(symbol, model, horizon_days, rv_forecast, origin)
     var_es = []
     for confidence in confidence_levels:
         z = float(norm.ppf(confidence))
@@ -236,6 +278,7 @@ def create_production_forecast(
         "actual_rv_mean": None,
         "rv_forecast": rv_forecast,
         "sigma_h_approx": sigma_h,
+        **rv_context,
         "risk_unit": f"returns are percent; RV is percent squared; VaR/ES are loss-positive % for {horizon_days} day(s)",
         "kappa_return_variance_to_rv": float(kappa),
         "model_kappa": float(model_kappa),
@@ -408,6 +451,7 @@ def get_forecast(forecast_id: str) -> dict:
                         "actual_rv_mean": None if pd.isna(row["actual_rv_mean"]) else float(row["actual_rv_mean"]),
                         "rv_forecast": float(row["rv_forecast"]),
                         "sigma_h_approx": float(row["sigma_h_approx"]),
+                        **_volatility_context(symbol, row["model"], horizon, float(row["rv_forecast"]), origin),
                         "status": row["status"],
                         "var_es": _risk_for_forecast(
                             symbol, row["model"], horizon,

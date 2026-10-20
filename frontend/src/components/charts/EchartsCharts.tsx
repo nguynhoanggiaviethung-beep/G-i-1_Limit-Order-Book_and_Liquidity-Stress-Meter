@@ -10,8 +10,8 @@ import { filterTable } from "../DataTable";
 echarts.use([BarChart, HeatmapChart, GridComponent, TooltipComponent, VisualMapComponent, CanvasRenderer]);
 
 export function MetricBarChart({ table, title }: { table: CsvTable; title: string }) {
-  const { filters } = useFilters();
-  const visible = filterTable(table, filters);
+  const { filters, resolvedModel } = useFilters();
+  const visible = filterTable(table, { ...filters, model: resolvedModel ?? "" }, false);
   const category = visible.headers.find((header) => /model|regime|strategy|method/i.test(header)) ?? visible.headers[0];
   const metric = visible.headers.find((header) => /qlike|rmse|mae|coverage|violation|score|loss/i.test(header) && header !== category)
     ?? visible.headers.find((header) => header !== category);
@@ -37,7 +37,7 @@ export function RegimeHeatmap({ counts }: { counts: Record<string, number> }) {
     tooltip: { position: "top" as const },
     xAxis: { type: "category" as const, data: ["Số ngày"], axisLabel: { color: "#656862" }, splitArea: { show: true } },
     yAxis: { type: "category" as const, data: entries.map(([name]) => name), axisLabel: { color: "#343632" }, splitArea: { show: true } },
-    visualMap: { min: 0, max: Math.max(1, ...entries.map(([, count]) => count)), calculable: false, orient: "horizontal" as const, left: "center", bottom: 0, inRange: { color: ["#e8edf5", "#316fca"] } },
+    visualMap: { min: 0, max: Math.max(1, ...entries.map(([, count]) => count)), calculable: false, orient: "horizontal" as const, left: "center", bottom: 0, inRange: { color: ["#eeefec", "#214fdb"] } },
     series: [{ type: "heatmap" as const, data: entries.map(([, count], index) => [0, index, count]), label: { show: true, color: "#20211f" }, emphasis: { itemStyle: { shadowBlur: 0 } } }],
   };
   return <div className="chart-panel"><div className="panel-heading"><h3>Số ngày theo trạng thái thị trường</h3><span className="mono muted">quan sát sẵn có</span></div>

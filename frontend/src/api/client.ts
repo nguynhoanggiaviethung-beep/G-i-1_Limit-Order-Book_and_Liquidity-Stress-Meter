@@ -121,6 +121,9 @@ export function parseCsv(text: string, name = "table.csv"): CsvTable {
   };
 }
 
-export function riskForConfidence(rows: RiskForecast[] | null | undefined, confidence: number) {
-  return rows?.find((row) => Math.abs(row.confidence - confidence) < 0.0001);
+export function riskForConfidence(rows: RiskForecast[] | null | undefined, confidence: number, method?: string) {
+  return rows?.find((row) =>
+    Math.abs(row.confidence - confidence) < 0.0001
+    && (!method || row.method.toLowerCase() === method.toLowerCase()),
+  );
 }

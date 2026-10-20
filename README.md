@@ -61,7 +61,9 @@ Workspace có ma trận forecast RV cho BTCUSDT/ETHUSDT × 1/7/30 ngày. Mỗi c
 
 ## Chạy giao diện frontend
 
-Frontend React/TypeScript nằm trong `frontend/`. Giao diện có sáu màn hình: Tổng quan, Dự báo, Đánh giá mô hình, Rủi ro & backtest, Regime & chiến lược, Phương pháp & dữ liệu. Các bảng, hình và forecast đọc từ API backend; trình duyệt không tự tính các metric nghiên cứu. Bộ lọc được lưu trên URL để có thể chia sẻ lựa chọn hiện tại.
+Frontend React/TypeScript nằm trong `frontend/`. Trang chính chạy ở production, tự chọn mô hình có QLIKE thấp nhất trong T3 cho tài sản và kỳ hạn được chọn, lấy forecast từ dữ liệu Binance mới nhất và tự làm mới mỗi 5 phút. Trang giải thích bốn chỉ số, cho nhập số tiền, xem 60 quan sát walk-forward và đối chiếu độ phủ T7 với QLIKE T3. Các màn hình đánh giá, kiểm định rủi ro và phương pháp chỉ mở từ mục “Chi tiết kỹ thuật”, được gắn nhãn là kết quả nghiên cứu đóng băng.
+
+VaR/ES chỉ được quy đổi sang số tiền khi backend trả về Filtered Historical Simulation (FHS). Production hiện trả VaR/ES xấp xỉ chuẩn, vì vậy giao diện ghi rõ phương pháp và ẩn số tiền lỗ cho tới khi có FHS. Kỳ hạn 30 ngày được gắn nhãn mô tả; các cột p-value bị ẩn.
 
 Mở hai terminal tại thư mục repository. Terminal thứ nhất chạy backend như hướng dẫn ở phần tiếp theo. Terminal thứ hai cài và chạy frontend bằng Node.js 22 trở lên:
 

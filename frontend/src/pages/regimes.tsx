@@ -29,6 +29,7 @@ export function RegimesPage() {
     <div className="tab-list" role="tablist" aria-label="Bảng regime và chiến lược">
       {[{ id: "T9", label: "T9 · Regime metrics" }, { id: "T10", label: "T10 · Economic strategies" }].map((item) => <button key={item.id} role="tab" aria-selected={selected === item.id} className={selected === item.id ? "tab-active" : ""} onClick={() => setSelected(item.id)}>{item.label}</button>)}
     </div>
-    <ApiState loading={table.isLoading} error={table.error}>{table.data && <DataTable table={table.data} />}</ApiState>
+    {filters.horizon === 30 && <div className="basic-warning" role="note">Kết quả 30 ngày chỉ mang tính mô tả; không diễn giải p-value như một kết luận.</div>}
+    <ApiState loading={table.isLoading} error={table.error}>{table.data && <DataTable table={table.data} descriptive={filters.horizon === 30} />}</ApiState>
   </div>;
 }

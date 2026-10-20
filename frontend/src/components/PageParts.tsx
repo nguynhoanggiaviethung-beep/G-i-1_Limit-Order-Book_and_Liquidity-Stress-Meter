@@ -21,8 +21,9 @@ export function Provenance({ compact = false }: { compact?: boolean }) {
   return <div className={`provenance ${compact ? "provenance-compact" : ""}`} title={`Data version: ${value.data_version ?? "—"}\nConfig hash: ${value.config_hash ?? "—"}`}>
     <Database size={14} />
     <span>{filters.mode === "research" ? "Snapshot nghiên cứu" : "Dữ liệu rolling"}</span>
-    {!compact && <><i /> <span>as-of {formatDate(value.as_of_utc)}</span></>}
-    <code>{shortHash(value.data_version)}</code>
+    <i /> <span>as-of {formatDate(value.as_of_utc)}</span>
+    <code>data {shortHash(value.data_version)}</code>
+    <code>config {shortHash(value.config_hash)}</code>
   </div>;
 }
 

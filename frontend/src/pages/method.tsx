@@ -44,7 +44,7 @@ export function MethodPage() {
     <div className="tab-list" role="tablist" aria-label="Bảng dữ liệu và robustness">
       {sourceTables.map((item) => <button key={item.id} role="tab" aria-selected={selected === item.id} className={selected === item.id ? "tab-active" : ""} onClick={() => setSelected(item.id)}>{item.label}</button>)}
     </div>
-    <ApiState loading={table.isLoading} error={table.error}>{table.data && <DataTable table={table.data} />}</ApiState>
+    <ApiState loading={table.isLoading} error={table.error}>{table.data && <DataTable table={table.data} descriptive={filters.horizon === 30} filterModel={false} />}</ApiState>
     <SectionHeader title="Hình nghiên cứu" note="SVG gốc được tải từ endpoint artifact; thiếu hình sẽ hiển thị trạng thái API." />
     <div className="figure-grid">{["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9"].map((id) => <FigurePreview key={id} figureId={id} />)}</div>
   </div>;

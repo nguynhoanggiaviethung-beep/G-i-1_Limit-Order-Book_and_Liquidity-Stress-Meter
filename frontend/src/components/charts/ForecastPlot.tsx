@@ -24,7 +24,7 @@ export function ForecastPlot({ points, title = "Độ biến động thực tế
       series: [
         {},
         { label: "RV thực tế", stroke: "#20211f", width: 1.5, points: { show: false } },
-        { label: "Dự báo", stroke: "#316fca", width: 2, points: { show: false } },
+        { label: "Dự báo", stroke: "#214fdb", width: 2, points: { show: false } },
       ],
       legend: { show: true },
     }, values, element);
