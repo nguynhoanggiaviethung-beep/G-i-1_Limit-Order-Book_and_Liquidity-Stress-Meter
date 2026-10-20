@@ -1,4 +1,5 @@
 import { ArrowDownRight, ArrowUpRight, RefreshCw, Waves } from "lucide-react";
+import { Link } from "@tanstack/react-router";
 import { useForecast, useForecastHistory, useLiveMarket, useRegime, useMeta } from "../api/queries";
 import { useForecastMutation } from "../api/queries";
 import type { ForecastRequest } from "../api/types";
@@ -28,16 +29,22 @@ function ExpertOverviewPage() {
   const request: ForecastRequest = { symbol: filters.symbol, model: resolvedModel ?? "har", horizon_days: filters.horizon, mode: filters.mode, confidence_levels: [0.95, 0.975, 0.99] };
 
   return <div className="page-stack">
-    <PageIntro eyebrow="BẢNG ĐIỀU KHIỂN / 01" title="Tổng quan thị trường" description="Biến động, dự báo và rủi ro đuôi từ dữ liệu nghiên cứu đóng băng hoặc nguồn Binance đang cập nhật." actions={<Provenance />} />
+    <PageIntro eyebrow="KẾT QUẢ NGHIÊN CỨU" title="Tổng quan kết quả" description="Dùng các mục dưới đây để trình bày lần lượt toàn bộ bảng và hình nghiên cứu. Các kết quả này được tính trên dữ liệu lịch sử đã lưu." actions={<Provenance />} />
+    <nav className="research-guide" aria-label="Lộ trình xem kết quả nghiên cứu">
+      <Link to="/evaluation" search={(previous) => ({ ...previous, ...filters, audience: "expert", mode: "research" })}><strong>1 · So sánh mô hình</strong><span>T3–T6 · Sai số, kiểm định và độ hiệu chỉnh; bắt đầu bằng so sánh với HAR.</span></Link>
+      <Link to="/risk" search={(previous) => ({ ...previous, ...filters, audience: "expert", mode: "research" })}><strong>2 · Kiểm tra rủi ro</strong><span>T7–T8 · Tần suất vượt VaR và các bài kiểm tra Expected Shortfall.</span></Link>
+      <Link to="/regimes" search={(previous) => ({ ...previous, ...filters, audience: "expert", mode: "research" })}><strong>3 · Trạng thái và chiến lược</strong><span>T9–T10 · Kết quả theo trạng thái thị trường và chiến lược kinh tế.</span></Link>
+      <Link to="/method" search={(previous) => ({ ...previous, ...filters, audience: "expert", mode: "research" })}><strong>4 · Dữ liệu và phương pháp</strong><span>T1–T2, T11 và F1–F9 · Mô tả dữ liệu, kiểm tra độ bền và toàn bộ hình nghiên cứu.</span></Link>
+    </nav>
     <div className="overview-grid">
       <StatTile label={`GIÁ NẾN 5 PHÚT · ${filters.symbol}`} value={live.data?.candle ? `$${formatNumber(Number(live.data.candle.price), 2)}` : "—"} detail={live.data?.candle ? <>Nến gần nhất · {formatDate(live.data.candle.close_time_utc ?? live.data.candle.open_time_utc, true)}</> : live.isLoading ? "Đang nhận dữ liệu Binance…" : "Chưa có nến trực tiếp"} tone="blue" />
-      <StatTile label={`RV DỰ BÁO · ${filters.horizon} NGÀY`} value={forecast ? formatNumber(forecast.rv_forecast, 4) : "—"} detail={forecast ? `${filters.model} · phần trăm bình phương` : filters.mode === "production" ? "Chạy forecast để xem giá trị mới" : "Chưa có forecast phù hợp"} />
-      <StatTile label={`VaR · ${Math.round(filters.confidence * 1000) / 10}%`} value={risk ? formatPercent(risk.var_loss_percent) : "—"} detail={risk ? `ES ${formatPercent(risk.expected_shortfall_loss_percent)} · ${risk.method}` : "Ước lượng rủi ro chưa khả dụng"} tone="red" />
-      <StatTile label="REGIME HIỆN TẠI" value={regime.data?.regime ?? "—"} detail={regime.data ? `Ngày dữ liệu ${formatDate(regime.data.latest_available_date_utc)}` : "Chờ nhãn regime từ backend"} />
+      <StatTile label={`BIẾN ĐỘNG DỰ BÁO · ${filters.horizon} NGÀY`} value={forecast ? formatNumber(forecast.rv_forecast, 4) : "—"} detail={forecast ? "Phương sai dự báo · phần trăm bình phương" : filters.mode === "production" ? "Chạy dự báo để xem giá trị mới" : "Chưa có dự báo phù hợp"} />
+      <StatTile label={`NGƯỠNG LỖ VaR · ${Math.round(filters.confidence * 1000) / 10}%`} value={risk ? formatPercent(risk.var_loss_percent) : "—"} detail={risk ? `ES · lỗ trung bình nhóm kỳ xấu: ${formatPercent(risk.expected_shortfall_loss_percent)}` : "Chưa có ước lượng rủi ro"} tone="red" />
+      <StatTile label="TRẠNG THÁI THỊ TRƯỜNG" value={regime.data?.regime ?? "—"} detail={regime.data ? `Dữ liệu đến ${formatDate(regime.data.latest_available_date_utc)}` : "Chưa có nhãn trạng thái"} />
     </div>
     <div className="dashboard-banner">
       <div className="banner-icon"><Waves size={19} /></div>
-      <div><strong>{filters.mode === "research" ? "Nghiên cứu walk-forward" : "Dữ liệu production rolling"}</strong><p>{filters.mode === "research" ? "Forecast đọc từ kết quả out-of-sample tại mốc snapshot; số thực tế chưa quan sát được sẽ để trống." : "Production dùng các ngày UTC hoàn chỉnh gần nhất. Mỗi yêu cầu forecast chạy mô hình trên dữ liệu đã đồng bộ ở máy này."}</p></div>
+      <div><strong>{filters.mode === "research" ? "Kiểm tra dự báo theo từng mốc quá khứ" : "Dữ liệu hiện tại từ Binance"}</strong><p>{filters.mode === "research" ? "Mỗi dự báo chỉ dùng dữ liệu có sẵn tại thời điểm đó rồi được đối chiếu với kết quả thực tế sau này. Đây là kiểm tra lịch sử, không phải dự báo trực tiếp." : "Dự báo dùng những ngày dữ liệu Binance đã hoàn tất gần nhất."}</p></div>
       {filters.mode === "production" && <button className="primary-button" onClick={() => mutation.mutate(request)} disabled={mutation.isPending || !resolvedModel}><RefreshCw size={15} className={mutation.isPending ? "spin" : ""} />{mutation.isPending ? "Đang tính…" : "Tạo forecast"}</button>}
     </div>
     <SectionHeader title="Diễn biến dự báo" note={`${filters.symbol} · ${filters.model} · horizon ${filters.horizon} ngày`} />

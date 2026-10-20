@@ -61,7 +61,7 @@ Workspace có ma trận forecast RV cho BTCUSDT/ETHUSDT × 1/7/30 ngày. Mỗi c
 
 ## Chạy giao diện frontend
 
-Frontend React/TypeScript nằm trong `frontend/`. Trang chính chạy ở production, tự chọn mô hình có QLIKE thấp nhất trong T3 cho tài sản và kỳ hạn được chọn, lấy forecast từ dữ liệu Binance mới nhất và tự làm mới mỗi 5 phút. Trang giải thích bốn chỉ số, cho nhập số tiền, xem 60 quan sát walk-forward và đối chiếu độ phủ T7 với QLIKE T3. Các màn hình đánh giá, kiểm định rủi ro và phương pháp chỉ mở từ mục “Chi tiết kỹ thuật”, được gắn nhãn là kết quả nghiên cứu đóng băng.
+Frontend React/TypeScript nằm trong `frontend/` và được tối ưu để trình bày trên laptop/PC. Thanh đầu trang có hai chế độ: “Dự báo” dùng dữ liệu Binance mới nhất; “Kết quả nghiên cứu” mở điều hướng tới toàn bộ bảng T1–T11 và hình F1–F9 trên dữ liệu lịch sử đã lưu. Màn hình dự báo giải thích bốn chỉ số bằng tiếng Việt, cho nhập số tiền, hiện khoảng thời gian dự báo theo giờ Việt Nam, xem 60 quan sát walk-forward và đối chiếu với HAR. Trang đánh giá mô hình nêu QLIKE của mô hình tốt nhất so với HAR theo tài sản, kỳ hạn và số kỳ kiểm tra tương ứng.
 
 VaR/ES chỉ được quy đổi sang số tiền khi backend trả về Filtered Historical Simulation (FHS). Production hiện trả VaR/ES xấp xỉ chuẩn, vì vậy giao diện ghi rõ phương pháp và ẩn số tiền lỗ cho tới khi có FHS. Kỳ hạn 30 ngày được gắn nhãn mô tả; các cột p-value bị ẩn.
 
@@ -70,11 +70,12 @@ Mở hai terminal tại thư mục repository. Terminal thứ nhất chạy back
 ```powershell
 cd frontend
 npm ci
-npm run api:types
 npm run dev
 ```
 
 Mở [http://127.0.0.1:5173](http://127.0.0.1:5173). Vite chuyển tiếp `/api` tới backend ở `127.0.0.1:8000`; luồng giá nến đang chạy được làm mới trên giao diện mỗi 5 giây. Khi muốn backend tự phục vụ giao diện đã build, chạy `npm run build` trong `frontend/`, sau đó mở [http://127.0.0.1:8000](http://127.0.0.1:8000). Tài liệu API vẫn ở `/docs`.
+
+Hướng dẫn mở dashboard, trình tự thuyết trình, cách diễn giải từng chỉ số và các giới hạn hiện tại nằm trong [bản Markdown](HUONG_DAN_SU_DUNG_DASHBOARD_TAIL_RISK.md) và [bản Word mới](HUONG_DAN_SU_DUNG_DASHBOARD_TAIL_RISK_MOI.docx). Gói mã nguồn frontend kèm hai bản hướng dẫn nằm trong `frontend_crypto_tail_risk_presentation.zip`.
 
 Sinh lại kiểu TypeScript từ OpenAPI sau khi thay đổi API bằng `npm run api:types`. Kiểm tra giao diện bằng `npm test`; Playwright/Axe có thể chạy với `npm run test:e2e` sau khi cài browser của Playwright.
 

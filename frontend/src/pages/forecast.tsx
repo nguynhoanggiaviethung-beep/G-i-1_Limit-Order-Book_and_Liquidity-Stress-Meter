@@ -20,9 +20,9 @@ export function ForecastPage() {
     ?? riskForConfidence(forecast?.var_es, filters.confidence);
   const request: ForecastRequest = { symbol: filters.symbol, model: resolvedModel ?? "har", horizon_days: filters.horizon, mode: filters.mode, confidence_levels: [0.95, 0.975, 0.99] };
   return <div className="page-stack">
-    <PageIntro eyebrow="DỰ BÁO / 02" title="Dự báo theo kỳ hạn" description="Kết quả walk-forward đã đóng băng hoặc dự báo mới từ dữ liệu production. Mô hình và bộ lọc được lưu trong URL." actions={filters.mode === "production" ? <button className="primary-button" onClick={() => mutation.mutate(request)} disabled={mutation.isPending || !resolvedModel}><Play size={14} />{mutation.isPending ? "Đang chạy mô hình…" : "Tạo dự báo"}</button> : undefined} />
+    <PageIntro eyebrow="DỰ BÁO / 02" title="Dự báo theo kỳ hạn" description={filters.mode === "research" ? "Xem dự báo đã tạo tại từng mốc trong dữ liệu lịch sử và đối chiếu với kết quả thực tế khi đã có." : "Chạy mô hình trên dữ liệu Binance mới nhất đã hoàn tất."} actions={filters.mode === "production" ? <button className="primary-button" onClick={() => mutation.mutate(request)} disabled={mutation.isPending || !resolvedModel}><Play size={14} />{mutation.isPending ? "Đang chạy mô hình…" : "Tạo dự báo"}</button> : undefined} />
     <ModelSelector />
-    <div className="forecast-context"><span className="context-chip">{filters.symbol}</span><span className="context-chip">{resolvedModel ?? "Đang chọn mô hình"}</span><span className="context-chip">{filters.horizon} ngày</span><span className={`context-chip ${filters.mode === "production" ? "chip-blue" : ""}`}>{filters.mode}</span></div>
+        <div className="forecast-context"><span className="context-chip">{filters.symbol}</span><span className="context-chip">{resolvedModel ?? "Đang chọn mô hình"}</span><span className="context-chip">{filters.horizon} ngày</span><span className={`context-chip ${filters.mode === "production" ? "chip-blue" : ""}`}>{filters.mode === "production" ? "Dự báo hiện tại" : "Kết quả nghiên cứu"}</span></div>
     <ApiState loading={filters.mode === "research" && researchForecast.isLoading} error={filters.mode === "research" ? researchForecast.error : mutation.error}>
       {forecast && <>
         <div className="overview-grid">
@@ -44,7 +44,7 @@ export function ForecastPage() {
     <ApiState loading={history.isLoading} error={history.error} empty={!history.isLoading && !history.error && !history.data?.points.length}>
       {history.data && <ForecastPlot points={history.data.points} />}
     </ApiState>
-    <SectionHeader title="Lợi suất và ngưỡng VaR" note="Mỗi vi phạm được đánh dấu ×. VaR hiển thị theo đơn vị loss-positive.">
+    <SectionHeader title="Lợi suất và ngưỡng VaR" note="Tối đa 60 ngày có đủ cả lợi suất thực tế và VaR.">
       {risk && <span className="badge">{risk.method} · {Math.round(filters.confidence * 1000) / 10}%</span>}
     </SectionHeader>
     <ApiState loading={history.isLoading} error={history.error} empty={!history.isLoading && !history.error && !history.data?.points.some((point) => point.actual_return_percent != null && point.var_loss_percent != null)}>

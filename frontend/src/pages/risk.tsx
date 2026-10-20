@@ -13,15 +13,15 @@ export function RiskPage() {
   const history = useForecastHistory(filters, resolvedModel, Boolean(resolvedModel));
   const points = history.data?.points ?? [];
   return <div className="page-stack">
-    <PageIntro eyebrow="RỦI RO / 04" title="VaR, ES & backtest" description="Đo lường loss tail và so sánh coverage từ các kết quả point-in-time đã lưu." actions={<span className="badge badge-red"><ShieldAlert size={13} /> LOSS-POSITIVE</span>} />
-    <div className="callout"><ShieldAlert size={16} /><span>VaR và Expected Shortfall là kết quả đã xuất từ pipeline backend. Mức 30 ngày được xem là mô tả; p-value và quyết định kiểm định được ẩn vì các quan sát chồng lấn.</span></div>
-    <SectionHeader title="VaR & Expected Shortfall" note="Các ước lượng và kiểm định chính thức do pipeline backend xuất." />
+    <PageIntro eyebrow="RỦI RO / 04" title="Kiểm tra ngưỡng lỗ" description="Xem số lần khoản lỗ thực tế vượt VaR và các phép kiểm tra mức lỗ trung bình trong những kỳ xấu nhất." actions={<span className="badge badge-red"><ShieldAlert size={13} /> KẾT QUẢ LỊCH SỬ</span>} />
+    <div className="callout"><ShieldAlert size={16} /><span>T7 đối chiếu số lần vượt VaR thực tế với số lần dự kiến theo mức tin cậy; T8 kiểm tra chất lượng ước lượng ES ở phần lỗ nghiêm trọng. Đây là kết quả trên dữ liệu quá khứ. Kỳ hạn 30 ngày chỉ mang tính mô tả vì các cửa sổ chồng lấn.</span></div>
+    <SectionHeader title="Kết quả kiểm định rủi ro" note="Các bảng này được tính trước trong nghiên cứu và tải từ backend." />
     <div className="tab-list" role="tablist" aria-label="Bảng rủi ro">
-      {[{ id: "T7", label: "T7 · VaR coverage" }, { id: "T8", label: "T8 · ES backtests" }].map((item) => <button key={item.id} role="tab" aria-selected={selected === item.id} className={selected === item.id ? "tab-active" : ""} onClick={() => setSelected(item.id)}>{item.label}</button>)}
+      {[{ id: "T7", label: "T7 · Số lần vượt ngưỡng VaR" }, { id: "T8", label: "T8 · Kiểm tra mức lỗ ES" }].map((item) => <button key={item.id} role="tab" aria-selected={selected === item.id} className={selected === item.id ? "tab-active" : ""} onClick={() => setSelected(item.id)}>{item.label}</button>)}
     </div>
     {filters.horizon === 30 && <div className="basic-warning" role="note">Kỳ hạn 30 ngày chỉ mang tính mô tả; không diễn giải kiểm định thống kê như bằng chứng kết luận.</div>}
     <ApiState loading={table.isLoading} error={table.error}>{table.data && <DataTable table={table.data} descriptive={filters.horizon === 30} />}</ApiState>
-    <SectionHeader title="Lợi suất và ngưỡng VaR" note="Dấu × đánh dấu lần lợi suất vượt ngưỡng. Dữ liệu chỉ hiển thị khi cùng có actual và VaR." />
+    <SectionHeader title="Lỗ thực tế so với ngưỡng VaR" note="Tối đa 60 ngày có đủ cả lợi suất thực tế và VaR." />
     <ApiState loading={history.isLoading} error={history.error} empty={!history.isLoading && !history.error && !points.some((point) => point.actual_return_percent != null && point.var_loss_percent != null)}>{history.data && <RiskExceptionPlot points={points} />}</ApiState>
   </div>;
 }

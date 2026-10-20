@@ -36,7 +36,7 @@ export function RiskExceptionPlot({ points }: { points: ForecastPoint[] }) {
   const gridValues = [yMin + (yMax - yMin) * 0.25, (yMin + yMax) / 2, yMin + (yMax - yMin) * 0.75];
 
   return <figure className="risk-exception-chart">
-    <div className="risk-chart-legend"><span><i className="legend-actual" />Lãi / lỗ ngày</span><span><i className="legend-var" />Ngưỡng lỗ VaR</span><span className="legend-exception">× Vượt ngưỡng</span></div>
+    <div className="risk-chart-legend"><span><i className="legend-actual" />Lãi / lỗ ngày</span><span><i className="legend-var" />Ngưỡng lỗ VaR (đường xanh)</span><span className="legend-exception">× Vượt ngưỡng</span></div>
     <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} role="img" aria-labelledby="risk-exception-title risk-exception-desc" preserveAspectRatio="none">
       <title id="risk-exception-title">Lãi lỗ ngày và ngưỡng VaR lịch sử</title>
       <desc id="risk-exception-desc">{rows.length} quan sát gần nhất; {exceptions.length} ngày lỗ vượt ngưỡng VaR. Cột thể hiện lợi suất ngày và các lần vượt ngưỡng được đánh dấu bằng dấu nhân màu đỏ.</desc>
@@ -56,6 +56,6 @@ export function RiskExceptionPlot({ points }: { points: ForecastPoint[] }) {
       <text x={LEFT} y={HEIGHT - 10} className="risk-axis-label">{formatDate(rows[0].origin_time)}</text>
       <text x={WIDTH - RIGHT} y={HEIGHT - 10} textAnchor="end" className="risk-axis-label">{formatDate(rows[rows.length - 1].origin_time)}</text>
     </svg>
-    <figcaption>{rows.length.toLocaleString("vi-VN")} ngày OOS gần nhất · cột biểu diễn lợi suất ngày, VaR loss-positive được vẽ thành ngưỡng âm bên dưới trục 0.</figcaption>
+    <figcaption>Trong {rows.length.toLocaleString("vi-VN")} ngày đã kiểm tra gần nhất, mỗi cột là lợi suất thực tế. Đường xanh đứt nằm dưới mức 0 vì VaR được hiển thị thành ngưỡng lỗ; dấu × là ngày khoản lỗ vượt đường ngưỡng.</figcaption>
   </figure>;
 }
