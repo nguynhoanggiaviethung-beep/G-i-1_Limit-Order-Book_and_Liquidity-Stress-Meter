@@ -11,7 +11,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Health */
+        /**
+         * Health
+         * @description Report process health and whether replay data is indexed.
+         */
         get: operations["health_health_get"];
         put?: never;
         post?: never;
@@ -21,15 +24,15 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/market-data/{symbol}": {
+    "/api/v1/data-status": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Get Market Data */
-        get: operations["get_market_data_api_v1_market_data__symbol__get"];
+        /** Get Data Status */
+        get: operations["get_data_status_api_v1_data_status_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -38,7 +41,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/forecasts": {
+    "/api/v1/replay/{symbol}/at": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Replay At */
+        get: operations["get_replay_at_api_v1_replay__symbol__at_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/replay/{symbol}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Replay */
+        get: operations["get_replay_api_v1_replay__symbol__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/meter/{symbol}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Meter */
+        get: operations["get_meter_api_v1_meter__symbol__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/predict": {
         parameters: {
             query?: never;
             header?: never;
@@ -47,40 +101,23 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Create Forecast */
-        post: operations["create_forecast_api_v1_forecasts_post"];
+        /** Predict */
+        post: operations["predict_api_v1_predict_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/v1/forecasts/history": {
+    "/api/v1/models": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Get Forecast History */
-        get: operations["get_forecast_history_api_v1_forecasts_history_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/forecasts/{forecast_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Forecast */
-        get: operations["get_forecast_api_v1_forecasts__forecast_id__get"];
+        /** Get Models */
+        get: operations["get_models_api_v1_models_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -106,218 +143,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/sync-status": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Sync Status
-         * @description Return the latest background Binance sync state.
-         */
-        get: operations["get_sync_status_api_v1_sync_status_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/live-market-data": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get All Live Market Data */
-        get: operations["get_all_live_market_data_api_v1_live_market_data_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/live-market-data/{symbol}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Live Market Data */
-        get: operations["get_live_market_data_api_v1_live_market_data__symbol__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/regimes/{symbol}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Regime */
-        get: operations["get_regime_api_v1_regimes__symbol__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/meta": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Meta
-         * @description Expose provenance and the filters supported by the current workspace.
-         */
-        get: operations["get_meta_api_v1_meta_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/results/tables/{table_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Result Table
-         * @description Serve an allowlisted T1-T11 CSV artifact without evaluating it in-browser.
-         */
-        get: operations["get_result_table_api_v1_results_tables__table_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/results/figures/{figure_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Result Figure
-         * @description Serve an allowlisted F1-F9 SVG artifact.
-         */
-        get: operations["get_result_figure_api_v1_results_figures__figure_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        /** ForecastRequest */
-        ForecastRequest: {
-            /**
-             * Symbol
-             * @description Binance Spot symbol included in the configured study.
-             * @enum {string}
-             */
-            symbol: "BTCUSDT" | "ETHUSDT";
-            /**
-             * Horizon Days
-             * @description Direct forecast horizon in UTC days; research design supports 1, 7, or 30.
-             * @default 1
-             * @enum {integer}
-             */
-            horizon_days: 1 | 7 | 30;
-            /**
-             * Model
-             * @description Volatility model name. Optional models require backend/requirements-optional.txt.
-             * @default random_walk
-             * @enum {string}
-             */
-            model: "random_walk" | "rolling_mean_7" | "rolling_mean_30" | "ewma_094" | "har" | "har_log" | "har_j" | "har_cj" | "shar" | "harq" | "elasticnet" | "random_forest" | "lightgbm_l2" | "lightgbm_qlike" | "xgboost" | "garch_t" | "gjr_t" | "egarch_t" | "garch_skewt";
-            /**
-             * Mode
-             * @description research loads the frozen walk-forward result; production fits a point-in-time model from the latest synchronized local Binance data.
-             * @default research
-             * @enum {string}
-             */
-            mode: "research" | "production";
-            /**
-             * Confidence Levels
-             * @description VaR/ES confidence levels supported by the current risk configuration.
-             */
-            confidence_levels?: (0.95 | 0.975 | 0.99)[];
-        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
-        /** MarketCandle */
-        MarketCandle: {
+        /** PredictRequest */
+        PredictRequest: {
             /** Symbol */
             symbol: string;
-            /** Interval */
-            interval: string;
             /**
-             * Open Time
-             * Format: date-time
+             * Horizon Seconds
+             * @default 5
              */
-            open_time: string;
-            /**
-             * Close Time
-             * Format: date-time
-             */
-            close_time: string;
-            /** Open */
-            open: number;
-            /** High */
-            high: number;
-            /** Low */
-            low: number;
-            /** Close */
-            close: number;
-            /** Volume */
-            volume: number;
-        };
-        /** MarketDataResponse */
-        MarketDataResponse: {
-            /** Symbol */
-            symbol: string;
-            /** Interval */
-            interval: string;
-            /** Rows */
-            rows: number;
-            /** Candles */
-            candles: components["schemas"]["MarketCandle"][];
+            horizon_seconds: number;
+            /** Timestamp Utc */
+            timestamp_utc?: string | null;
+            /** Features */
+            features: {
+                [key: string]: unknown;
+            };
+            /** Quality */
+            quality?: {
+                [key: string]: unknown;
+            };
         };
         /** ValidationError */
         ValidationError: {
@@ -357,18 +210,76 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        [key: string]: string;
+                        [key: string]: unknown;
                     };
                 };
             };
         };
     };
-    get_market_data_api_v1_market_data__symbol__get: {
+    get_data_status_api_v1_data_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    get_replay_at_api_v1_replay__symbol__at_get: {
+        parameters: {
+            query: {
+                timestamp_utc: string;
+                depth?: number;
+            };
+            header?: never;
+            path: {
+                symbol: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_replay_api_v1_replay__symbol__get: {
         parameters: {
             query?: {
-                interval?: string;
-                start_time?: string | null;
-                end_time?: string | null;
+                start?: string | null;
+                end?: string | null;
+                depth?: number;
                 limit?: number;
             };
             header?: never;
@@ -385,7 +296,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MarketDataResponse"];
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */
@@ -399,7 +312,43 @@ export interface operations {
             };
         };
     };
-    create_forecast_api_v1_forecasts_post: {
+    get_meter_api_v1_meter__symbol__get: {
+        parameters: {
+            query?: {
+                timestamp_utc?: string | null;
+                horizon_seconds?: number;
+            };
+            header?: never;
+            path: {
+                symbol: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    predict_api_v1_predict_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -408,7 +357,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ForecastRequest"];
+                "application/json": components["schemas"]["PredictRequest"];
             };
         };
         responses: {
@@ -418,7 +367,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */
@@ -432,17 +383,9 @@ export interface operations {
             };
         };
     };
-    get_forecast_history_api_v1_forecasts_history_get: {
+    get_models_api_v1_models_get: {
         parameters: {
-            query: {
-                symbol: string;
-                model: string;
-                horizon_days: number;
-                mode?: string;
-                risk_method?: string;
-                confidence?: number;
-                limit?: number;
-            };
+            query?: never;
             header?: never;
             path?: never;
             cookie?: never;
@@ -455,130 +398,15 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_forecast_api_v1_forecasts__forecast_id__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                forecast_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
         };
     };
     get_evaluation_api_v1_evaluation__symbol__get: {
         parameters: {
-            query?: {
-                horizon_days?: number | null;
-            };
-            header?: never;
-            path: {
-                symbol: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_sync_status_api_v1_sync_status_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-        };
-    };
-    get_all_live_market_data_api_v1_live_market_data_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-        };
-    };
-    get_live_market_data_api_v1_live_market_data__symbol__get: {
-        parameters: {
             query?: never;
             header?: never;
             path: {
@@ -597,136 +425,6 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_regime_api_v1_regimes__symbol__get: {
-        parameters: {
-            query?: {
-                mode?: "research" | "production";
-            };
-            header?: never;
-            path: {
-                symbol: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_meta_api_v1_meta_get: {
-        parameters: {
-            query?: {
-                mode?: "research" | "production";
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_result_table_api_v1_results_tables__table_id__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                table_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_result_figure_api_v1_results_figures__figure_id__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                figure_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

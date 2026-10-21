@@ -1,28 +1,35 @@
-# Crypto Limit Order Book and Liquidity Risk
+# Limit Order Book & Liquidity Stress Meter
 
-Backend nghiên cứu Binance Spot theo hướng **LOB-only** cho BTCUSDT và ETHUSDT. Dữ liệu đầu vào của feature/model chỉ đến từ REST depth snapshot và WebSocket diff-depth updates. Không dùng OHLCV, nến 5 phút, trade hay aggTrade làm đầu vào.
+Research and replay dashboard for short-horizon cryptocurrency market microstructure. The active project predicts (1) three-class mid-price direction and (2) liquidity stress from BTCUSDT and ETHUSDT L2 order books.
 
-Mid-price được tính từ best bid/ask trong local book đã đồng bộ. Vì vậy các mục tiêu RV, VaR và ES là proxy dựa trên mid-price LOB; chúng không đại diện giá khớp lệnh độc lập.
+## Research scope
 
-## Giới hạn lịch sử
+- Historical Binance Spot L2 order-book events and trades from CryptoHFTData, 2025-06-28 through 2025-12-31 UTC.
+- Replay into a valid one-second grid with the top 20 bid and ask levels. Sequence gaps invalidate samples until a complete snapshot restores the book.
+- Primary horizon: 5 seconds. Sensitivity horizons: 1 and 10 seconds.
+- Baselines: one-second direction persistence, stress-state persistence, Logistic Regression, Random Forest, and XGBoost. DeepLOB-style CNN-LSTM is an offline extension; a Transformer or Temporal CNN is considered only if it improves validation results.
+- Expanding walk-forward development through 2025-11-30; 2025-12-01 through 2025-12-31 is the untouched final test period.
+- Product: a read-only Liquidity Stress Meter over historical replay. Live Binance depth is an optional later extension.
 
-Binance Spot REST depth trả snapshot book hiện tại, không cung cấp lịch sử LOB nhiều năm. Collector bắt đầu tạo lịch sử từ lúc được chạy. Các file OHLCV và kết quả tail-risk cũ còn trên máy được giữ nguyên nhưng backend LOB không đọc chúng. Không nội suy khoảng trống sequence hay thời gian thiếu mẫu.
+The project does not place orders and does not provide investment advice.
 
-## Thành phần chính
+## Current data and model availability
 
-- `backend/app/ingestion/`: REST snapshot, WebSocket diff-depth và collector độc lập theo symbol.
-- `backend/app/orderbook/`: căn chỉnh snapshot/update ID, cập nhật bid/ask, phát hiện gap và kiểm tra book.
-- `backend/app/storage/`: JSONL raw append-only, Parquet snapshot/feature và manifest SHA-256.
-- `backend/app/features/`: spread, top-N depth, OBI, microprice, lag/rolling features và target từ mid-price.
-- `backend/app/datasets/`: dataset theo thời gian và kiểm tra target availability/leakage.
-- `backend/app/models/` và `backend/app/evaluation/`: baseline persistence/Ridge, VaR/ES lịch sử và đánh giá walk-forward.
-- `backend/app/api/routes/lob.py`: API đọc trạng thái collector, local book và feature mới nhất.
-- `frontend/src/LOBApp.tsx`: dashboard desktop theo dõi LOB trực tiếp.
-- `config/symbols.yaml`, `config/settings.yaml`: cặp giao dịch, sampling, storage và horizon.
+Market data is not stored in Git. Place approved, normalized replay partitions under:
 
-## Cài đặt
+```text
+data_processed/cryptohftdata/grid/
+└── symbol=BTCUSDT/date=YYYY-MM-DD/book_1s.parquet
+└── symbol=ETHUSDT/date=YYYY-MM-DD/book_1s.parquet
+```
 
-Chạy trong PowerShell ở thư mục gốc project:
+The source archive and its checksum manifest belong under `data_raw/cryptohftdata/`. The normalized grid must contain UTC timestamps, a `book_valid` flag, 20 bid and ask price/quantity levels, event-level OFI aggregated during replay, and trade-flow aggregates. See [research_design.md](docs/research_design.md) and [data_dictionary.md](docs/data_dictionary.md) for the full contract.
+
+This checkout does not include that six-month source dataset or trained classification artifacts. Until the data is supplied and models are trained, data-status and meter endpoints return `unavailable` with a reason; the dashboard does not fill in demo probabilities.
+
+## Setup
+
+Use Python 3.11 or newer and Node.js 20 or newer.
 
 ```powershell
 py -3.11 -m venv .venv
@@ -31,42 +38,16 @@ $PY = ".\.venv\Scripts\python.exe"
 & $PY -m pip install -r requirements.txt
 ```
 
-Không cần Binance API key để đọc market data công khai. REST snapshot thử market-data-only host trước, sau đó luân phiên qua các official Spot REST hosts đã cấu hình nếu endpoint hiện tại không phản hồi. Lệnh sau kiểm tra REST snapshot và nhận ít nhất một diff-depth event cho từng symbol:
+## Run the API and replay dashboard
 
-```powershell
-& $PY backend\scripts\test_connection.py
-```
-
-## Chạy collector và API
-
-Khởi động API bằng Uvicorn. Khi server chạy, collector tự kết nối và lưu dữ liệu cho từng symbol; lỗi một symbol không dừng symbol còn lại.
+Start the API from the repository root:
 
 ```powershell
 $PY = ".\.venv\Scripts\python.exe"
 & $PY -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000 --reload
 ```
 
-Mở `http://127.0.0.1:8000/docs` để xem API. Các endpoint đọc dữ liệu:
-
-- `GET /health` — trạng thái backend và collector.
-- `GET /api/v1/collector/status` — kết nối, event rate, độ trễ, update ID, reconnect/resync, book-valid time và dung lượng trống.
-- `GET /api/v1/lob/latest?symbol=BTCUSDT` — top 20 bid/ask gần nhất khi book còn hợp lệ và mới.
-- `GET /api/v1/features/latest?symbol=BTCUSDT` — feature LOB mới nhất cùng quality flags.
-- `GET /api/v1/forecasts/latest?symbol=BTCUSDT` — gồm nhóm theo dõi 1 phút/5 phút/1 giờ và dự báo biến động dài hạn 1/7/30 ngày; so sánh benchmark truyền thống với mô hình LOB và chấm QLIKE khi nhãn tương lai đã hoàn tất.
-
-WebSocket diff-depth được nhận liên tục; cấu hình sampling hiện lưu một mẫu theo clock mỗi giây. Dashboard đọc API mỗi 1 giây khi feed ổn định, và giãn nhịp kiểm tra khi đang kết nối lại. Nếu chưa có book hợp lệ, endpoint book/features trả 503 thay vì đưa dữ liệu stale ra như dữ liệu mới; forecast endpoint vẫn trả số mẫu và lỗi kết nối để giải thích trạng thái.
-
-Có thể chạy collector riêng không kèm API bằng:
-
-```powershell
-& $PY backend\scripts\collect_lob.py
-```
-
-Chạy **một trong hai** cách thu thập trên một thư mục dữ liệu tại cùng thời điểm, tránh ghi hai collector song song.
-
-## Chạy giao diện
-
-Mở terminal thứ hai. Nếu terminal hiện tại đã ở trong `frontend`, bỏ qua `cd frontend`.
+Start the dashboard in a second terminal:
 
 ```powershell
 cd frontend
@@ -74,36 +55,62 @@ npm ci
 npm run dev
 ```
 
-Mở `http://127.0.0.1:5173`. Giữ cả API/collector và Vite đang chạy. Nếu đã đứng ở thư mục `frontend`, không chạy `cd frontend` lần nữa.
+Open <http://127.0.0.1:5173>. The API is documented at <http://127.0.0.1:8000/docs>.
 
-## Kiểm tra dữ liệu và tạo kết quả nghiên cứu
+The API reads Parquet replay files and model artifacts only. It does not start a market-data collector or download data when the server starts.
 
-Raw event được append theo `data/raw/lob/<symbol>/date=YYYY-MM-DD/`. Feature Parquet và sampled top-20 snapshots được partition theo symbol/ngày. Manifest ở `data/state/lob/<symbol>/manifest.jsonl` ghi path, time range, row count, checksum, collector version và thống kê book hợp lệ.
+## Build features and classifiers
+
+After the normalized one-second grids are in place, build point-in-time features partition by partition:
 
 ```powershell
-& $PY backend\scripts\validate_lob.py
-& $PY backend\scripts\build_lob_dataset.py
-& $PY backend\scripts\run_lob_evaluation.py
+& $PY backend\scripts\build_lob_classification_dataset.py
 ```
 
-Nhóm theo dõi intraday tạo target 60 giây, 300 giây và 3.600 giây từ mẫu một giây. RV tương lai là tổng bình phương log-return mid-price trong đúng horizon. HAR-RV và Ridge/Gradient Boosting được huấn luyện tiền trình sau ít nhất 60 nhãn hoàn tất, không chồng lấn.
+The script writes full-depth features, rolling OFI/trade flow, price impact, and 10/60/300-second RV to `data_processed/cryptohftdata/features/` using atomic file replacement. Run the walk-forward development and one-time December final evaluation with:
 
-Nhóm dài hạn gộp mid-price returns và đặc trưng spread/imbalance/depth/microprice thành ngày UTC. Một ngày chỉ được dùng khi có ít nhất 99,5% mẫu dự kiến và không có khoảng trống lớn hơn 5 giây. Dự báo 1/7/30 ngày là RV tích lũy tương lai, không phải giá mục tiêu. Rolling mean là benchmark; HAR-RV dùng RV ngày 1/7/30, Ridge và Gradient Boosting bổ sung trung bình đặc trưng LOB ngày. Dự báo dài hạn chốt theo ngày UTC hoàn chỉnh gần nhất. Các nhãn huấn luyện chỉ mature sau khi toàn bộ kỳ hạn tương lai hoàn tất; cần khoảng 31/43/89 ngày LOB liên tục để có 30 nhãn mature cho horizon 1/7/30 ngày, gồm lookback trước forecast đầu tiên. Các ngày tóm tắt được lưu tại `data/features/lob_daily/` để khôi phục warm-up sau khi khởi động lại. QLIKE 7/30 ngày dùng origin hằng ngày có cửa sổ chồng lấn nên chỉ mang tính mô tả.
+```powershell
+& $PY backend\scripts\run_lob_classification.py
+```
 
-VaR/ES lịch sử ngắn hạn chỉ hiển thị khi có đủ các cửa sổ hoàn tất (200 mẫu cho VaR 95%, 1.000 mẫu cho VaR 99%) để tránh diễn giải đuôi phân phối từ quá ít quan sát. Walk-forward chỉ dùng nhãn đã kết thúc trước origin; các khoảng invalid/gap không được tạo target.
+This command writes metrics to ignored `outputs/tables/<SYMBOL>/` and trained bundles to ignored `backend/artifacts/meter/<SYMBOL>/`. It refuses to score December again when an output already exists. Pass `--allow-repeat-final-test` only when an intentional re-score is approved. Optional filters include `--symbol BTCUSDT` and `--horizon 5`.
 
-Kết quả nằm ở `results/metrics/lob/`, `results/forecasts/lob/` và QA ở `results/metrics/lob_data_quality.json`. Nếu dữ liệu hoặc OOS tail sample chưa đủ, script ghi trạng thái thiếu dữ liệu thay vì tạo kết quả giả. Mốc nghiên cứu lịch sử sẽ bắt đầu từ khi collector chạy; không tuyên bố đây là backtest nhiều năm.
+The repository contains the replay-grid contract and downstream feature/model pipeline. The CryptoHFTData source archive and its provider-specific download/normalization adapter are external inputs and must be supplied by the data owner; no source data is fabricated.
 
-## Sampling, sequence và độ phủ book
+## API
 
-Collector mở WebSocket trước, buffer diff-depth events, lấy REST snapshot, bỏ event cũ và chỉ phát hành book sau event đầu tiên bao phủ `lastUpdateId`. Update bị stale được bỏ; nếu `U > lastUpdateId + 1`, book bị invalid và collector đồng bộ lại bằng snapshot. Quantity bằng 0 xóa mức giá.
+- `GET /health` — process and replay-index status.
+- `GET /api/v1/data-status` — available symbols, partitions, dates, and row counts.
+- `GET /api/v1/replay/{symbol}?start=&end=&depth=&limit=` — historical one-second book snapshots.
+- `GET /api/v1/replay/{symbol}/at?timestamp_utc=&depth=` — latest valid snapshot at or before a UTC timestamp.
+- `GET /api/v1/meter/{symbol}?timestamp_utc=&horizon_seconds=` — direction probabilities, stress probability, spread, imbalance, OFI, model version, and quality flags.
+- `POST /api/v1/predict` — score a supplied feature row with the saved artifact.
+- `GET /api/v1/models` — trained artifact availability and summary metrics.
+- `GET /api/v1/evaluation/{symbol}` — out-of-sample metrics by horizon and regime.
 
-Binance REST hỗ trợ snapshot tối đa 5.000 mức mỗi phía; cấu hình hiện lấy 100 mức để giảm độ trễ và REST weight, vẫn đủ cho top-20 levels dashboard hiển thị. Nếu snapshot trả về sau update stream, collector đổi REST host rồi thử đồng bộ lại, thay vì lặp lại endpoint cũ. Khi WebSocket lỗi, lần reconnect kế tiếp đổi qua host stream dự phòng. Các mức sâu hơn snapshot ban đầu không được biết cho đến khi Binance gửi thay đổi mức đó; nghiên cứu phải giới hạn diễn giải độ sâu theo những mức đã được quan sát. Mọi timestamp lưu UTC gồm event time và local receive time riêng biệt.
+Use ISO-8601 UTC timestamps. If data, labels, or trained models are missing, responses carry `status: "unavailable"` and a reason.
 
-Các quy tắc sequence dựa trên [tài liệu WebSocket Streams chính thức của Binance](https://github.com/binance/binance-spot-api-docs/blob/master/web-socket-streams.md); REST snapshot theo [Spot REST API](https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md).
+## Code map
 
-## Không commit dữ liệu thị trường
+- `backend/app/data/grid_store.py` — read-only partition catalog and replay access.
+- `backend/app/orderbook/` — exact-price local book state and sequence validation retained for the event replay adapter.
+- `backend/app/features/` — LOB structure, event-level OFI, point-in-time features, and rolling volatility.
+- `backend/app/labels/` — future mid-price direction and train-thresholded liquidity-stress labels.
+- `backend/app/models/lob_classifiers.py` — Logistic, Random Forest, and XGBoost classifier factories.
+- `backend/app/evaluation/lob_classification.py` — imbalance-aware metrics and chronological folds.
+- `backend/app/api/routes/replay.py` — replay, meter, model, and evaluation API.
+- `frontend/src/LOBApp.tsx` — replay-first Liquidity Stress Meter.
+- `config/settings.yaml` — horizons, label settings, data period, and embargo.
 
-Raw JSONL, Parquet, checkpoint, logs và kết quả lớn nằm ngoài Git qua `.gitignore`. Chỉ commit code, cấu hình và tài liệu đã rà soát. Có thể xem quy ước field tại [data_dictionary.md](docs/data_dictionary.md), định nghĩa mục tiêu tại [methodology.md](docs/methodology.md) và phạm vi nghiên cứu tại [research_design.md](docs/research_design.md).
+Older volatility/VaR/ES source modules and research outputs remain in the repository for reference. They are not mounted by the active API or shown in the current dashboard; prior presentation files are grouped under `legacy/`.
 
-Các script/module OHLCV và tài liệu Tail-Risk dashboard cũ còn trong workspace để lưu dấu công việc trước đây; các lệnh pipeline OHLCV đã bị tắt, và chúng không được API LOB hiện hành gọi. Entry frontend hiện tại là `frontend/src/LOBApp.tsx`; các trang dashboard cũ không được nạp.
+## Research notes
+
+- Freeze research choices before opening final-test metrics.
+- Fit direction delta, stress quantiles, scaling, feature selection, and calibration using development data only.
+- Keep horizons contiguous; never create labels across missing seconds or invalid book segments.
+- Report macro F1, balanced accuracy, MCC, class precision/recall, Brier score, calibration, and stress PR-AUC. Accuracy alone is not a model-selection metric.
+- Compare OFI against static depth imbalance using the same model and folds.
+- Report the fraction of valid replay seconds and every recovery after a sequence gap.
+
+See [methodology.md](docs/methodology.md) for definitions and [research_design.md](docs/research_design.md) for frozen defaults.

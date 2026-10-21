@@ -1,0 +1,130 @@
+"""Build one-second, point-in-time features from normalized full-depth grids."""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+
+
+def _window_sum(values: pd.Series, segments: pd.Series, window: int) -> pd.Series:
+    return values.groupby(segments, sort=False).transform(
+        lambda part: part.rolling(window, min_periods=window).sum()
+    )
+
+
+def _impact(prices: np.ndarray, quantities: np.ndarray, mid: np.ndarray, notional: float, buy: bool) -> np.ndarray:
+    level_notional = prices * quantities
+    cumulative_notional = np.cumsum(level_notional, axis=1)
+    cumulative_quantity = np.cumsum(quantities, axis=1)
+    filled = cumulative_notional >= notional
+    complete = filled.any(axis=1)
+    level = np.argmax(filled, axis=1)
+    row = np.arange(len(prices))
+    before_notional = np.where(level > 0, cumulative_notional[row, np.maximum(level - 1, 0)], 0.0)
+    before_quantity = np.where(level > 0, cumulative_quantity[row, np.maximum(level - 1, 0)], 0.0)
+    level_price = prices[row, level]
+    quantity = before_quantity + np.divide(
+        notional - before_notional,
+        level_price,
+        out=np.zeros_like(mid, dtype=float),
+        where=level_price > 0,
+    )
+    vwap = np.divide(notional, quantity, out=np.full_like(mid, np.nan, dtype=float), where=quantity > 0)
+    impact = (vwap - mid) / mid * 10000.0 if buy else (mid - vwap) / mid * 10000.0
+    impact[~complete | ~np.isfinite(mid) | (mid <= 0)] = np.nan
+    return impact
+
+
+def build_classification_features(grid: pd.DataFrame, impact_notional_usdt: float = 1000.0) -> pd.DataFrame:
+    """Return the input grid with derived LOB, OFI/trade, and rolling RV features."""
+    if grid.empty:
+        return grid.copy()
+    frame = grid.copy()
+    time_column = "timestamp_utc" if "timestamp_utc" in frame else "sample_time_utc"
+    if time_column not in frame:
+        raise ValueError("Grid must have timestamp_utc or sample_time_utc")
+    frame["timestamp_utc"] = pd.to_datetime(frame[time_column], utc=True, errors="coerce")
+    frame = frame.dropna(subset=["timestamp_utc"]).sort_values("timestamp_utc").drop_duplicates("timestamp_utc", keep="last").reset_index(drop=True)
+    if "book_valid" not in frame:
+        frame["book_valid"] = True
+    if frame["book_valid"].dtype == object:
+        frame["book_valid"] = frame["book_valid"].astype(str).str.strip().str.lower().isin({"true", "1", "yes"})
+    else:
+        frame["book_valid"] = frame["book_valid"].fillna(False).astype(bool)
+    bid_prices = [f"bid_price_{level}" for level in range(1, 21)]
+    bid_qty = [f"bid_qty_{level}" for level in range(1, 21)]
+    ask_prices = [f"ask_price_{level}" for level in range(1, 21)]
+    ask_qty = [f"ask_qty_{level}" for level in range(1, 21)]
+    required = [*bid_prices, *bid_qty, *ask_prices, *ask_qty]
+    missing = [name for name in required if name not in frame]
+    if missing:
+        raise ValueError(f"Normalized replay grid is missing full-depth columns: {', '.join(missing[:4])}")
+
+    bp = frame[bid_prices].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+    bq = frame[bid_qty].apply(pd.to_numeric, errors="coerce").fillna(0).to_numpy(dtype=float)
+    ap = frame[ask_prices].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+    aq = frame[ask_qty].apply(pd.to_numeric, errors="coerce").fillna(0).to_numpy(dtype=float)
+    mid = (bp[:, 0] + ap[:, 0]) / 2.0
+    spread = ap[:, 0] - bp[:, 0]
+    top_total = bq[:, 0] + aq[:, 0]
+    microprice = np.divide(ap[:, 0] * bq[:, 0] + bp[:, 0] * aq[:, 0], top_total, out=mid.copy(), where=top_total > 0)
+    frame["best_bid"] = bp[:, 0]
+    frame["best_bid_qty"] = bq[:, 0]
+    frame["best_ask"] = ap[:, 0]
+    frame["best_ask_qty"] = aq[:, 0]
+    frame["mid_price"] = mid
+    frame["absolute_spread"] = spread
+    frame["relative_spread_bps"] = np.divide(spread, mid, out=np.full_like(mid, np.nan), where=mid > 0) * 10000.0
+    frame["microprice"] = microprice
+    frame["microprice_minus_mid_bps"] = np.divide(microprice - mid, mid, out=np.full_like(mid, np.nan), where=mid > 0) * 10000.0
+    for depth in (1, 5, 10, 20):
+        bid_depth = bq[:, :depth].sum(axis=1)
+        ask_depth = aq[:, :depth].sum(axis=1)
+        total = bid_depth + ask_depth
+        frame[f"bid_depth_qty_{depth}"] = bid_depth
+        frame[f"ask_depth_qty_{depth}"] = ask_depth
+        frame[f"depth_qty_{depth}"] = total
+        frame[f"obi_qty_{depth}"] = np.divide(bid_depth - ask_depth, total, out=np.full_like(total, np.nan), where=total > 0)
+
+    frame["impact_buy_bps"] = _impact(ap, aq, mid, impact_notional_usdt, buy=True)
+    frame["impact_sell_bps"] = _impact(bp, bq, mid, impact_notional_usdt, buy=False)
+    frame["price_impact_bps"] = frame[["impact_buy_bps", "impact_sell_bps"]].max(axis=1, skipna=True)
+
+    times = frame["timestamp_utc"].astype("int64").to_numpy()
+    one_second = pd.Timedelta(seconds=1).value
+    continuous = np.r_[False, np.diff(times) == one_second]
+    valid = frame["book_valid"].to_numpy(dtype=bool) & np.isfinite(mid)
+    starts = ~(continuous & valid & np.r_[False, valid[:-1]])
+    segments = pd.Series(np.cumsum(starts), index=frame.index)
+    returns = pd.Series(np.log(mid).diff(), index=frame.index).where(valid)
+    returns = returns.mask(segments.groupby(segments).cumcount().eq(0))
+    frame["mid_return_1s"] = returns
+    squared = returns.pow(2)
+    for window in (10, 60, 300):
+        frame[f"rv_{window}s"] = _window_sum(squared, segments, window)
+
+    ofi_name = next((name for name in ("ofi_1s", "ofi_event_sum_1s", "ofi") if name in frame), None)
+    if ofi_name is not None:
+        frame["ofi_1s"] = pd.to_numeric(frame[ofi_name], errors="coerce")
+        for window in (5, 10):
+            frame[f"ofi_{window}s"] = _window_sum(frame["ofi_1s"], segments, window)
+    else:
+        for name in ("ofi_1s", "ofi_5s", "ofi_10s"):
+            if name not in frame:
+                frame[name] = np.nan
+
+    buy_name = next((name for name in ("aggressive_buy_volume_1s", "buy_volume_1s") if name in frame), None)
+    sell_name = next((name for name in ("aggressive_sell_volume_1s", "sell_volume_1s") if name in frame), None)
+    if buy_name and sell_name:
+        buy = pd.to_numeric(frame[buy_name], errors="coerce").fillna(0)
+        sell = pd.to_numeric(frame[sell_name], errors="coerce").fillna(0)
+        for window in (5, 10):
+            buys = _window_sum(buy, segments, window)
+            sells = _window_sum(sell, segments, window)
+            frame[f"trade_imbalance_{window}s"] = np.divide(buys - sells, buys + sells, out=np.full(len(frame), np.nan), where=(buys + sells).to_numpy() > 0)
+    else:
+        for name in ("trade_imbalance_5s", "trade_imbalance_10s"):
+            if name not in frame:
+                frame[name] = np.nan
+    return frame
+

@@ -1,41 +1,19 @@
 """FastAPI application entry point."""
 
-import asyncio
-from contextlib import asynccontextmanager
-
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, Response
 
-from app.api.routes import health, lob
-from app.core.config import REPOSITORY_ROOT, load_settings
+from app.api.routes import health, replay
+from app.core.config import REPOSITORY_ROOT
 from app.core.logging import configure_logging
-from app.ingestion.collector import BinanceLOBCollector
+from app.services.replay_service import ReplayService
 
 configure_logging()
 
 
-@asynccontextmanager
-async def lifespan(application: FastAPI):
-    settings = load_settings()
-    if settings.lob_sampling_interval_seconds < 1:
-        raise ValueError("lob.sampling_interval_seconds must be at least one second")
-    if settings.lob_depth_snapshot_limit < 1 or settings.lob_depth_snapshot_limit > 5000:
-        raise ValueError("lob.depth_snapshot_limit must be between 1 and 5000")
-    collector = BinanceLOBCollector(settings)
-    application.state.lob_collector = collector
-    tasks = []
-    if settings.lob_collection_enabled:
-        tasks.append(asyncio.create_task(collector.run_forever(), name="binance-lob-collector"))
-    try:
-        yield
-    finally:
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-
-app = FastAPI(title="LOB-Only Crypto Risk Research API", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="Limit Order Book & Liquidity Stress Meter API", version="1.0.0")
+app.state.replay_service = ReplayService()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -43,7 +21,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(health.router)
-app.include_router(lob.router)
+app.include_router(replay.router)
 
 
 @app.get("/", include_in_schema=False)

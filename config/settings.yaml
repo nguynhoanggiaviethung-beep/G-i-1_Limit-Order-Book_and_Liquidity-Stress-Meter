@@ -1,6 +1,6 @@
-# LOB-only input configuration. No candle or trade stream is used.
+# Historical LOB replay is the active research path. Binance live collection is an extension.
 data:
-  directory: data
+  directory: data_processed/cryptohftdata
 binance:
   # Public market-data-only endpoint; rotate through official Spot REST alternatives if unavailable.
   base_url: https://data-api.binance.vision
@@ -14,7 +14,7 @@ binance:
   timeout_seconds: 4
   retries: 2
 lob:
-  collection_enabled: true
+  collection_enabled: false
   websocket_base_url: wss://stream.binance.com:443
   websocket_fallback_urls:
     - wss://data-stream.binance.vision:443
@@ -28,15 +28,17 @@ lob:
   flush_rows: 500
   flush_seconds: 10
   temporal_history_samples: 3600
-  target_horizons_seconds: [60, 300, 3600]
-  # Longer risk forecasts are issued only from completed, quality-checked UTC LOB days.
-  target_horizons_days: [1, 7, 30]
-  long_online_minimum_train_examples: 30
-  long_online_maximum_train_examples: 500
-  minimum_daily_coverage: 0.995
-  minimum_train_rows: 1000
-  test_fraction: 0.2
-  refit_interval_samples: 3600
-  online_minimum_train_examples: 60
-  online_maximum_train_examples: 500
-  online_refit_every_examples: 10
+  classification_horizons_seconds: [1, 5, 10]
+  primary_horizon_seconds: 5
+  depth_levels: 20
+  direction_delta_quantile: 0.5
+  stress_quantile: 0.95
+  stress_depth_quantile: 0.05
+  stress_impact_notional_usdt: 1000
+  first_validation_month: "2025-08"
+  development_end_utc: "2025-11-30T23:59:59Z"
+  untouched_test_start_utc: "2025-12-01T00:00:00Z"
+  untouched_test_end_utc: "2025-12-31T23:59:59Z"
+  embargo_seconds: 300
+  feature_lookback_seconds: 300
+  deeplob_lookback_seconds: 100

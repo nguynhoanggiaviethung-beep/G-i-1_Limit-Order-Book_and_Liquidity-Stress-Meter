@@ -1,55 +1,72 @@
-# Thiết kế nghiên cứu LOB-only
+# Research design: LOB direction and liquidity stress
 
-## Mục tiêu
+## Objective and questions
 
-Nghiên cứu xem trạng thái và biến động của Limit Order Book (LOB) có giúp dự báo biến động và rủi ro đuôi của mid-price proxy hay không. Feature, target, lựa chọn mô hình và đánh giá đều dùng dữ liệu LOB đã được tái tạo hợp lệ.
+The study tests whether order-book state and order flow provide point-in-time information about very short-horizon mid-price direction and liquidity stress in crypto spot markets.
 
-## Phạm vi nguồn
+- **RQ1:** Do static depth-imbalance measures predict mid-price direction beyond a class-frequency benchmark?
+- **RQ2:** Does event-level Order Flow Imbalance add predictive information beyond static imbalance?
+- **RQ3:** Do DeepLOB-style models improve on Logistic Regression and XGBoost on the untouched period?
+- **RQ4:** How stable are the results across volatility regimes and calendar months?
+- **RQ5:** Do conclusions persist under macro F1, MCC, Brier score, class imbalance, and calibration checks?
 
-- Binance Spot REST `GET /api/v3/depth` tạo snapshot khởi đầu.
-- Binance Spot WebSocket `<symbol>@depth@100ms` cung cấp diff-depth updates.
-- Symbol ban đầu là BTCUSDT và ETHUSDT; danh sách lấy từ `config/symbols.yaml`.
-- Không dùng OHLCV, kline, trade, aggTrade, funding, open interest hay dữ liệu ngoài.
-- Lịch sử bắt đầu từ thời gian chạy collector. REST depth không cung cấp lịch sử sổ lệnh.
+## Frozen scope and defaults
 
-## Đồng bộ book và chất lượng
+| Decision | Default |
+|---|---|
+| Market | Binance Spot BTCUSDT and ETHUSDT |
+| Data | CryptoHFTData L2 book events and trades, 2025-06-28 to 2025-12-31 UTC |
+| Sampling | Clock-time one-second grid |
+| Book depth | 20 levels per side; OBI sensitivity at L=1, 5, 10, 20 |
+| Horizons | 1, 5, 10 seconds; 5 seconds is primary |
+| Direction classes | Up / flat / down, with symbol- and horizon-specific delta fitted on the first training fold and then frozen |
+| Stress label | Composite spread, fixed-notional price impact, top-10 depth depletion, and 60-second realized volatility; thresholds fitted on train only |
+| Development | Expanding walk-forward through 2025-11-30 |
+| Final test | 2025-12-01 through 2025-12-31, opened once after model selection |
+| Embargo | At least the maximum of the forecast horizon, 300-second feature lookback, and 100-second deep-model sequence |
+| Exchange extension | Coinbase cross-exchange validation is out of scope for the primary study |
+| Product mode | Historical replay; live depth feed is deferred |
 
-Mỗi symbol có kết nối, snapshot, book map, sequence và reconnect riêng. Collector buffer WebSocket events rồi lấy snapshot. Event đầu tiên được áp dụng phải bao phủ update ID của snapshot; event cũ bị loại. Nếu update range bắt đầu sau `lastUpdateId + 1`, book mất hợp lệ, không phát feature, và collector khởi động lại chu trình bằng một snapshot mới.
+The primary source-data range may have incomplete coverage. The final report must state actual valid seconds, coverage, missing intervals, and sequence-gap recoveries; it must not describe absent periods as observed.
 
-Snapshot REST được giới hạn tối đa 5.000 mức mỗi phía. Các mức ngoài snapshot không được biết cho tới khi có update. Giữ event time, transaction time khi nguồn cung cấp, local receive time, connection ID và phiên bản collector. Feed cũ, book rỗng/crossed, lỗi sequence và disconnect đều phải hiện trong status/quality flags.
+## Data and replay
 
-## Sampling và target horizon
+The source is historical Level 2 order-book events and trades. Replay each symbol independently from snapshot and update IDs. A sequence gap invalidates the book until a complete snapshot is applied. Emit a one-second row only when the state is valid and no more than two seconds old. Do not interpolate missing book states.
 
-Mặc định lấy mẫu theo clock mỗi giây, không giả định stream nhất thiết phát event ở mỗi mốc. Một mẫu chỉ được lưu khi book đồng bộ và event chưa stale. `config/settings.yaml` quy định chu kỳ sampling, thời gian stale tối đa, flush và horizons.
+Every row retains exchange event time and local receive time separately. Sequence order, not local receive time, determines event application and OFI. Store raw source files and checksums outside Git. Store normalized grids in date and symbol Parquet partitions.
 
-Mid-price tại mẫu `t`:
+## Features
 
-`mid_t = (best_bid_t + best_ask_t) / 2`
+Features at time `t` may use only events with timestamps at or before `t`:
 
-Log-return giữa các mẫu liên tiếp:
+- mid-price, absolute and relative spread, and microprice offset;
+- quantity and notional depth, depth slope, and OBI at 1, 5, 10, and 20 levels;
+- OFI calculated from every event before it is aggregated into one-, five-, and ten-second windows;
+- aggressive buy/sell volume and trade imbalance in trailing windows;
+- fixed-notional buy and sell price impact from walking the book;
+- mid-price realized variance over trailing 10, 60, and 300 seconds.
 
-`r_t = ln(mid_t / mid_(t-1))`
+No feature window may cross an invalid second or sequence gap. Any scaler, imputer, feature selector, regime threshold, or probability calibrator is fitted within the corresponding training fold.
 
-RV mục tiêu tại origin `t` trên `H` bước lấy mẫu phía trước:
+## Targets
 
-`RV_(t,H) = sum(r_(t+i)^2), i=1..H`
+Direction uses the mid-price at origin `t` and the exact mid-price at `t+h`. A sample is eligible only if every one-second state from `t` through `t+h` is valid and contiguous. The flat-band threshold `delta` is estimated from absolute future mid-price changes in the first training fold for each symbol and horizon, then held fixed.
 
-Return mục tiêu là `ln(mid_(t+H) / mid_t)`. H mặc định 60, 300 và 3.600 giây. Nếu thiếu mẫu trên grid hoặc book invalid ở horizon tương lai, target được để invalid; không nội suy hay điền giá.
+Liquidity stress at `t+h` is one if any train-derived condition is met: spread at or above its 95th percentile, fixed-notional price impact at or above its 95th percentile, top-10 depth at or below its 5th percentile, or trailing 60-second realized variance at or above its 95th percentile. Report the single-spread label separately as a sensitivity check. If the stress prevalence is near zero or otherwise degenerate, revise the label using development data before opening the final test.
 
-Dashboard còn có dự báo dài hạn 1, 7 và 30 ngày. Nhóm này gộp RV mid-price và đặc trưng spread/OBI/depth/microprice từ LOB theo ngày UTC. Một ngày chỉ hợp lệ khi coverage ít nhất 99,5% và khoảng trống mẫu không quá 5 giây. Nhãn là tổng RV của các ngày tương lai và chỉ được chấm sau khi đủ toàn bộ horizon; không dùng OHLCV hay giao dịch.
+## Models and validation
 
-VaR/ES đo tổn thất `-return` của mid-price proxy. Chúng không được diễn giải là risk theo execution price.
+1. Class-frequency and persistence baselines.
+2. Logistic Regression with train-fold scaling and class balancing.
+3. Random Forest and XGBoost; choose settings using chronological validation folds only.
+4. DeepLOB-style CNN-LSTM. Temporal CNN or Transformer only if the CNN-LSTM improves validation results.
 
-## Feature
+Use expanding calendar-month walk-forward folds for development. Apply an embargo of at least `max(horizon, feature lookback, sequence lookback)` between training labels and validation. Fit preprocessing and thresholds only on the fold's training data. Select models using validation results, then fit on development data and score December once.
 
-Nhóm feature gồm top-of-book và spread; tổng quantity/notional depth ở 5/10/20 mức; OBI quantity/notional; microprice; depth concentration/profile slope; lag, thay đổi và rolling mean/std/quantiles; mid-price return và trailing RV. Công thức chi tiết nằm trong [methodology.md](methodology.md).
+Direction metrics: macro F1, balanced accuracy, MCC, per-class precision/recall, multiclass Brier score, confusion matrix, and calibration curve. Stress metrics: PR-AUC, MCC, precision/recall at a validation-selected threshold, Brier score, calibration curve, and expected calibration error. Report accuracy for context only. Compare paired models on the same folds and include paired significance checks where sample size supports them.
 
-Feature được ghi với sample timestamp, event/receive time, sequence ID, thời gian trễ, trạng thái book và quality flags. Target columns không được đưa vào feature matrix.
+Report metrics by month and by three causal volatility regimes formed from trailing mid-price RV terciles. Add latency and model-size summaries. No conclusion about deep learning is supported unless its incremental performance is shown on the untouched period.
 
-## Chia tập và walk-forward
+## Product boundary
 
-Các mẫu sắp theo clock timestamp, không shuffle. Mỗi origin chỉ được train trên nhãn có `target_end_utc <= origin_time_utc`. Imputer, scaler và Ridge fit lại trên phần quá khứ tại mỗi lần refit; không fit trên OOS. Mặc định phần cuối theo thời gian là OOS; số training tối thiểu và tần suất refit lấy từ cấu hình.
-
-Volatility báo MAE, RMSE và QLIKE. Baseline RV là persistence trên trailing RV; mô hình hồi quy gồm Ridge và histogram gradient boosting. VaR/ES gồm empirical historical baseline và linear quantile regression từ LOB features. ES dùng tail mean từ training losses tại/beyond VaR. Với risk horizons lớn hơn một sample, backtest giảm mẫu OOS về origin không chồng lấn trước khi tính coverage/score.
-
-Kết quả chỉ được xuất nếu có đủ history/label. Nếu chưa đạt ngưỡng, báo `insufficient_*`; không thay bằng dữ liệu OHLCV hay sample tổng hợp.
+The Liquidity Stress Meter is a read-only replay product. It shows spread, top-depth imbalance, OFI, `P(up)`, `P(flat)`, `P(down)`, liquidity-stress probability, model version, and book-quality status. Live order-book streaming is a later extension. If replay data or a compatible trained model is absent, the API and dashboard show an explicit unavailable state.

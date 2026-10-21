@@ -1,84 +1,61 @@
-# Từ điển dữ liệu LOB-only
+# Replay data dictionary
 
-Thời gian lưu bằng UTC. Binance giá/quantity bắt đầu ở dạng decimal string trong raw feed; book map dùng decimal chính xác. Các feature numeric là float khi xuất Parquet.
+All time fields are UTC. Raw prices and quantities should be kept as decimal strings in source events. Numeric Parquet columns may use float64 after replay. Files are partitioned by symbol and UTC date.
 
-## Raw JSONL
+## Source and normalized locations
 
-Vị trí: `data/raw/lob/<symbol>/date=YYYY-MM-DD/events-NNNN.jsonl`.
+```text
+data_raw/cryptohftdata/                         # source archive and approved checksum manifest
+data_processed/cryptohftdata/grid/
+  symbol=<SYMBOL>/date=YYYY-MM-DD/book_1s.parquet
+data_processed/cryptohftdata/features/
+  symbol=<SYMBOL>/date=YYYY-MM-DD/features_1s.parquet
+```
 
-| Field | Ý nghĩa |
+The source dataset is external and is not committed to this repository. The replay API reads only normalized `book_1s.parquet` partitions.
+
+## One-second grid fields
+
+| Field | Definition |
 |---|---|
-| `source` | `binance_spot_ws_diff_depth` hoặc `binance_spot_rest_depth_snapshot`. |
-| `symbol` | Symbol Binance Spot, ví dụ BTCUSDT. |
-| `stream` | Tên diff-depth stream hoặc REST route snapshot. |
-| `connection_id` | ID duy nhất cho mỗi lần kết nối WebSocket. |
-| `collector_version` | Phiên bản logic ghi/đồng bộ collector. |
-| `event_time_utc` | Event time `E` của depth update; không có với REST snapshot. |
-| `transaction_time_utc` | Transaction time nếu event có trường đó; Spot diff-depth hiện có thể không cung cấp. |
-| `received_at_utc` | Thời gian máy local nhận WebSocket event. |
-| `snapshot_received_at_utc` | Thời gian nhận REST snapshot. |
-| `payload` | Raw snapshot/update JSON, gồm sequence ID và các thay đổi bid/ask. |
+| `symbol` | `BTCUSDT` or `ETHUSDT`. |
+| `timestamp_utc` | Clock-time sample timestamp; exactly one-second grid. |
+| `event_time_utc` | Exchange event time of the latest applied update. |
+| `received_at_utc` | Local receive time, retained separately from exchange time. |
+| `first_update_id`, `last_update_id` | Sequence range applied by the replay at this sample. |
+| `book_valid` | True only for synchronized, uncrossed, non-empty book state. |
+| `sequence_gap` | True when a missing update invalidated the state. |
+| `seconds_since_gap` | Elapsed valid seconds since the last recovery snapshot. |
+| `bid_price_1..20`, `bid_qty_1..20` | Best-to-deeper bid levels. |
+| `ask_price_1..20`, `ask_qty_1..20` | Best-to-deeper ask levels. |
+| `ofi_1s` | Sum of event-level OFI contributions during the preceding second. |
+| `aggressive_buy_volume_1s`, `aggressive_sell_volume_1s` | Aggressor-side trade volume in `(t-1s,t]`. |
+| `trade_count_1s` | Number of trades in the same window. |
+| `qa_flags` | Missing/stale/gap/recovery and displayed-depth warnings. |
 
-## Sampled snapshot và feature
+Rows are omitted when no valid book is available or the last update is older than two seconds. Do not fill missing seconds.
 
-Vị trí: `data/processed/lob_snapshots/symbol=<symbol>/date=<day>/` và `data/features/lob/symbol=<symbol>/date=<day>/`.
+Per-day QA sidecars are read from `outputs/manifests/symbol=<SYMBOL>/date=YYYY-MM-DD/qa.json` or an adjacent `book_1s.qa.json`. They report `valid_seconds`, `expected_seconds`, `dropped_seconds`, `sequence_gap_count`, `snapshot_recoveries`, and `coverage`. `GET /api/v1/data-status` reports these totals when sidecars are present; missing QA remains explicitly unavailable.
 
-| Field | Ý nghĩa |
+## Derived point-in-time features
+
+| Field | Definition |
 |---|---|
-| `symbol` | Tài sản của sample. |
-| `sample_time_utc` | Clock time khi trạng thái book được lấy mẫu. |
-| `event_time_utc` | Event time của update mới nhất đã áp dụng. |
-| `received_at_utc` | Local receive time của update mới nhất đã áp dụng. |
-| `last_update_id` | `u` cuối cùng đã áp dụng trong local book. |
-| `book_valid` | True nếu snapshot/update sequence đồng bộ, book không crossed/empty và feed còn mới. |
-| `quality_flags` | Danh sách nguyên nhân invalid/stale khi có. |
-| `event_age_ms` | Chênh lệch sample/receive-event theo milliseconds. |
-| `best_bid`, `best_bid_qty` | Giá và lượng bid tốt nhất. |
-| `best_ask`, `best_ask_qty` | Giá và lượng ask tốt nhất. |
-| `mid_price` | Trung bình best bid/ask, dùng làm proxy. |
-| `absolute_spread` | Ask trừ bid. |
-| `relative_spread_bps` | Spread chia mid-price, nhân 10.000. |
-| `bid_depth_qty_N`, `ask_depth_qty_N` | Tổng quantity top N levels; N=5,10,20. |
-| `bid_depth_notional_N`, `ask_depth_notional_N` | Tổng `price * quantity` top N levels. |
-| `obi_qty_N`, `obi_notional_N` | Imbalance signed trong [-1,1] theo quantity hoặc notional. |
-| `microprice` | Giá bid/ask trọng số theo quantity phía đối diện. |
-| `microprice_minus_mid_bps` | Microprice offset so với mid-price theo bps. |
-| `depth_profile_slope_bid_20`, `depth_profile_slope_ask_20` | Slope của tỷ trọng quantity theo khoảng cách giá top-20, khoảng cách chuẩn hóa theo bps. |
-| `*_lag_1`, `*_change` | Feature lag hoặc sai khác với mẫu trước. |
-| `*_mean_N`, `*_std_N`, `*_q50_N`, `*_q95_N` | Rolling mean/std/median/95th percentile trên tối đa N mẫu trước; N=60,300,3600. |
-| `mid_return` | Log-return giữa mid hiện tại và mẫu trước. |
-| `past_rv_N` | Tổng bình phương return đã quan sát trong tối đa N mẫu gần nhất. |
+| `mid_price` | `(best_ask + best_bid) / 2`. |
+| `absolute_spread`, `relative_spread_bps` | Ask minus bid; spread divided by mid and multiplied by 10,000. |
+| `microprice`, `microprice_minus_mid_bps` | Opposite-side quantity-weighted quote and its offset from mid. |
+| `bid_depth_qty_L`, `ask_depth_qty_L`, `depth_qty_L` | Bid, ask, and combined quantity through level L. |
+| `obi_qty_L` | Signed quantity imbalance for L in 1, 5, 10, 20. |
+| `ofi_1s`, `ofi_5s`, `ofi_10s` | Event-level OFI summed over trailing windows ending at the sample. |
+| `trade_imbalance_5s`, `trade_imbalance_10s` | `(buy_volume - sell_volume) / total_volume` in trailing windows. |
+| `impact_buy_bps`, `impact_sell_bps` | Adverse VWAP impact for a fixed USDT notional swept through visible asks/bids. |
+| `price_impact_bps` | Maximum of buy and sell adverse impact. |
+| `rv_10s`, `rv_60s`, `rv_300s` | Trailing sum of squared one-second mid-price log returns. |
 
-Snapshot Parquet giữ `bid_levels_top_20_json` và `ask_levels_top_20_json`; raw event stream vẫn được giữ riêng để audit/replay.
+All rolling windows reset at gaps. Every scaler, imputer, and threshold is fitted on training data only.
 
-## Tóm tắt LOB theo ngày cho dự báo dài hạn
+## Target and result fields
 
-Vị trí: `data/features/lob_daily/symbol=<symbol>/daily_summary.jsonl`. Mỗi dòng chỉ được ghi sau khi một ngày UTC hoàn tất và đạt ít nhất 99,5% coverage, không có khoảng trống mẫu lớn hơn 5 giây.
+Direction targets are `up`, `flat`, or `down` at 1, 5, and 10 second horizons. Stress targets are binary and use train-only quantiles for spread, fixed-notional price impact, top-10 depth, and trailing RV. Store `target_end_utc`, `target_valid`, and the threshold version with every label dataset.
 
-| Field | Ý nghĩa |
-|---|---|
-| `date_utc` | Ngày UTC được tổng hợp. |
-| `sample_count`, `coverage` | Số mẫu LOB hợp lệ và tỷ lệ so với số mẫu dự kiến trong ngày. |
-| `daily_rv` | Tổng bình phương `mid_return` trong ngày, dùng làm target volatility. |
-| `daily_return` | Tổng log-return mid-price trong ngày. |
-| `lob_features` | Trung bình ngày của spread, microprice offset, OBI và depth top-N. |
-
-Các dòng này giúp nạp lại lịch sử dự báo sau restart; chúng không chứa OHLCV hoặc giao dịch.
-
-## Dataset targets
-
-Vị trí: `data/features/lob_datasets/symbol=<symbol>/horizon_samples=<H>.parquet`.
-
-| Field | Ý nghĩa |
-|---|---|
-| `target_return` | `ln(mid_(t+H)/mid_t)` từ mid-price LOB. |
-| `target_rv` | Tổng bình phương mid-price returns trong H mẫu tương lai. |
-| `target_abs_loss` | `max(-target_return, 0)` theo đơn vị return. |
-| `target_end_utc` | Timestamp cuối target horizon. |
-| `target_valid` | Target chỉ true khi book liên tục, hợp lệ và đúng clock grid hết horizon. |
-
-Không đưa `target_*`, symbol, timestamp hoặc quality metadata vào feature matrix. `target_end_utc` bắt buộc không sớm hơn forecast origin; train row chỉ dùng khi target đã mature tại origin.
-
-## Collector status và manifest
-
-`GET /api/v1/collector/status` trả trạng thái kết nối, book validity, update ID, event rate, latency, reconnect/resync count, sample count, valid-sample ratio, disk-free bytes và lỗi gần nhất. Manifest `data/state/lob/<symbol>/manifest.jsonl` bổ sung artifact path, date/time range, row count, SHA-256 và collector version.
+The meter response contains `timestamp_utc`, `horizon_seconds`, `spread`, imbalance at L=1/5/10/20, `ofi_5s`, `p_up`, `p_flat`, `p_down`, `p_stress`, `model_version`, and `quality`. Probability fields are null when the matching trained artifact is unavailable.

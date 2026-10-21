@@ -1,59 +1,79 @@
-# Phương pháp xử lý và đánh giá LOB
+# Methodology
 
-## Thu nhận và local book
+## Local book and sampling
 
-WebSocket diff-depth được mở trước REST snapshot để không bỏ qua các update trong lúc khởi tạo. Mọi event được append raw JSONL cùng symbol, stream, connection ID, collector version, event time và receive time trước khi xử lý.
+Replay each symbol independently. Apply a diff update only when its update-ID range follows the current book sequence. A gap invalidates the local book until a new snapshot is synchronized. Sample at one-second UTC clock boundaries and retain a sample only if the book is valid and no more than two seconds old. Never carry book state across an invalid interval.
 
-REST snapshot ưu tiên Binance Market Data Only domain; khi request thất bại, collector thử tiếp các official Spot REST hosts đã cấu hình. Request có timeout ngắn, retry có giới hạn và chẩn đoán hiển thị endpoint cuối đã lỗi. Snapshot mặc định 1.000 levels để giảm REST weight; đây vẫn đủ cho top-20 levels đang trình bày.
+Let `b1` and `a1` be the best bid and ask, with quantities `qb1` and `qa1`:
 
-Collector bỏ event có `u <= snapshot.lastUpdateId`. Snapshot chỉ được chấp nhận khi sự kiện tiếp theo có dải update ID chứa snapshot ID. Với book đã khởi tạo, event có `u <= lastUpdateId` là stale và bị bỏ; event có `U > lastUpdateId + 1` là sequence gap. Gap làm book invalid và kích hoạt reconnect/resnapshot; không tiếp tục phát feature từ trạng thái chưa đồng bộ. Các level được thay quantity theo event; quantity bằng 0 xóa level. Giá/quantity lưu bằng Decimal để tránh làm sai key do binary float.
+```text
+mid_t = (a1_t + b1_t) / 2
+spread_t = a1_t - b1_t
+relative_spread_bps_t = 10,000 * spread_t / mid_t
+microprice_t = (a1_t * qb1_t + b1_t * qa1_t) / (qb1_t + qa1_t)
+```
 
-## Storage và provenance
+If the top-level quantity sum is zero, use mid-price for microprice and set the quality flag. For `L` levels:
 
-- Raw diff-depth và REST snapshot: append-only JSONL theo symbol/ngày, chia file khi đạt giới hạn dung lượng.
-- Sampled top-20 local book: Parquet theo symbol/ngày.
-- Feature: Parquet theo symbol/ngày.
-- Manifest JSONL: loại artifact, path, row count, time range, SHA-256, connection/collector version và số hàng book-valid.
-- Checkpoint không thay thế raw stream; khởi động mới vẫn đồng bộ bằng snapshot mới.
+```text
+OBI_L(t) = (sum_bid_qty_L - sum_ask_qty_L) / (sum_bid_qty_L + sum_ask_qty_L)
+```
 
-Feature/snapshot Parquet ghi từng phần để giảm số file. Snapshot đã xử lý giữ top 20 mỗi phía; raw events và manifest là nguồn để kiểm tra/replay sâu hơn.
+If total depth is zero, OBI is missing. Calculate notional depth and top-20 depth slope alongside quantity depth.
 
-## Feature
+## Order Flow Imbalance
 
-- `mid_price = (best_bid + best_ask) / 2`.
-- `absolute_spread = best_ask - best_bid`; `relative_spread_bps = absolute_spread / mid_price * 10,000`.
-- `bid_depth_N` và `ask_depth_N`: tổng khối lượng trong top N mức giá, với N=5, 10, 20. Notional depth cộng `price * quantity`.
-- `OBI_N = (bid_depth_N - ask_depth_N) / (bid_depth_N + ask_depth_N)`. Nếu mẫu số bằng 0, OBI bằng 0.
-- `microprice = (best_ask * best_bid_qty + best_bid * best_ask_qty) / (best_bid_qty + best_ask_qty)`. Nếu tổng quantity bằng 0, dùng mid-price và ghi trạng thái chất lượng.
-- Microprice offset lưu theo bps so với mid. Depth concentration lưu tỷ lệ quantity ở top 5 trên tổng quantity top N. Depth profile slope hồi quy tỷ trọng quantity từng mức theo khoảng cách giá chuẩn hóa theo bps.
-- Lag/rolling mean, standard deviation, median và quantile 95 chỉ dựa trên các mẫu trước origin; mid-price return và trailing RV dùng dữ liệu đã quan sát tới sample hiện tại.
+For each ordered event `n`, define `P^b`, `q^b`, `P^a`, and `q^a` as the best bid/ask prices and quantities immediately before and after the event:
 
-## Target và leakage
+```text
+e_n = 1(P^b_n >= P^b_(n-1)) q^b_n
+    - 1(P^b_n <= P^b_(n-1)) q^b_(n-1)
+    - 1(P^a_n <= P^a_(n-1)) q^a_n
+    + 1(P^a_n >= P^a_(n-1)) q^a_(n-1)
+```
 
-Target được căn theo thời gian lấy mẫu cố định. Với horizon H, các return từ `t+1` đến `t+H` dùng để tính forward RV và cumulative log-return. Hàng target chỉ hợp lệ nếu tất cả state trong đường đi hợp lệ, timestamp cách nhau đúng sampling interval và không có gap.
+Sum `e_n` over trailing 1, 5, and 10 second windows. OFI must be accumulated during event replay; it cannot be reconstructed correctly from one snapshot per second. Trade imbalance uses aggressive buy and sell volumes in `(t-w, t]`; Binance buyer-maker `false` denotes an aggressive buy.
 
-`target_end_utc` là timestamp cuối horizon. Trong walk-forward, hàng chỉ được train nếu `target_end_utc <= origin_time_utc`. Feature matrix loại symbol/time/quality metadata và toàn bộ target/future/label columns. Chronological split giữ thứ tự; imputer/scaler chỉ fit trên train của từng refit.
+## Price impact and volatility features
 
-## Mô hình và score
+For a fixed USDT notional, sweep asks to estimate buy VWAP and bids to estimate sell VWAP. Express adverse movement from the mid-price in basis points. If the visible 20 levels cannot fill the notional, record the impact as missing and flag insufficient displayed depth.
 
-- Benchmark RV persistence dùng RV của cửa sổ quá khứ cùng độ dài horizon (nếu chưa có cột đúng horizon trong một fixture ngắn, dùng trailing 60 giây ngoại suy theo `H/60`).
-- HAR-RV hồi quy log-RV tương lai theo RV quá khứ 1 phút, 5 phút và 1 giờ; đây là benchmark tuyến tính truyền thống.
-- Ridge và histogram gradient boosting hồi quy log-RV, dùng imputer và preprocessing được fit trên training rows đã mature tại origin.
-- Linear quantile regression dự báo quantile return điều kiện từ LOB features; ES ước lượng bằng tail mean lịch sử với loss vượt VaR.
-- VaR/ES baseline: quantile loss distribution của target returns quá khứ; VaR là positive loss quantile, ES là trung bình tail loss tại/vượt VaR.
-- Volatility: MAE, RMSE, QLIKE (`log(forecast) + actual/forecast`); forecast phải dương.
-- VaR: pinball loss, breach rate và Kupiec unconditional coverage.
-- VaR/ES đồng thời: FZ0 score; score nhỏ hơn tốt hơn khi cùng mẫu/horizon/confidence.
-- Risk horizons dùng các origin không chồng lấn để hạn chế phụ thuộc cơ học giữa target windows.
+For one-second mid-price log returns `r_t`, trailing realized variance is:
 
-Mọi kết quả được gắn với symbol, horizon, clock interval, tập feature, OOS rows và nguồn LOB. Mid-price proxy, giới hạn snapshot depth, gap, sample validity và độ dài lịch sử phải nêu khi báo cáo.
+```text
+RV_w(t) = sum(r_i^2), i in the trailing w seconds
+```
 
-## Dự báo trực tuyến nhiều horizon
+Use windows of 10, 60, and 300 seconds. Rolling calculations reset after a sequence gap or missing grid second.
 
-Dashboard giữ nhóm theo dõi RV ngắn hạn 1 phút, 5 phút và 1 giờ từ clock samples một giây. Nhóm này được so sánh với dự báo dài hạn thay vì đại diện cho dự báo xa.
+## Labels
 
-Nhóm dài hạn gộp các mẫu LOB hợp lệ thành ngày UTC. Một ngày yêu cầu coverage tối thiểu 99,5% và không có khoảng trống clock lớn hơn 5 giây; ngày không đạt điều kiện bị loại và không được nối target qua gap. RV ngày là tổng bình phương log-return mid-price từ book. Đặc trưng LOB theo ngày gồm spread, microprice offset, OBI và depth. Forecast origin đặt ở cuối ngày đã hoàn tất; target là tổng RV trong 1, 7 hoặc 30 ngày UTC kế tiếp.
+For horizon `h`:
 
-Rolling mean theo RV ngày là benchmark truyền thống. HAR-RV hồi quy log RV tương lai theo RV ngày gần nhất và trung bình RV 7/30 ngày; Ridge và histogram gradient boosting bổ sung đặc trưng book theo ngày. Nhãn chỉ được thêm vào tập huấn luyện sau khi toàn bộ target horizon hoàn tất; supervised models đợi tối thiểu 30 nhãn mature (xấp xỉ 31/43/89 ngày dữ liệu liên tục cho horizon 1/7/30 ngày, gồm lookback trước forecast origin đầu tiên). Tóm tắt ngày nhỏ gọn được lưu riêng và replay khi backend khởi động lại. QLIKE dùng forecast được phát hành tại mỗi daily origin; các cửa sổ 7/30 ngày chồng lấn nên điểm số có phụ thuộc thời gian và chỉ mang tính mô tả.
+```text
+change_(t,h) = mid_(t+h) - mid_t
+up   if change_(t,h) > delta
+flat if abs(change_(t,h)) <= delta
+down if change_(t,h) < -delta
+```
 
-Reconnect/stale gap xóa cửa sổ ngắn hạn, accumulator ngày hiện tại và hàng đợi target chưa mature; dữ liệu ngày mature trước gap giữ trong tệp tóm tắt nhưng chuỗi liên tục bắt đầu lại. QLIKE không chấm forecast in-sample. VaR/ES lịch sử ngắn hạn cần tối thiểu 200/1.000 cửa sổ cho mức 95%/99%.
+Estimate `delta` from the chosen quantile of absolute future mid-price changes in the first training fold for each symbol and horizon. Freeze it before model comparison. A label is missing if any state from `t` through `t+h` is absent or invalid.
+
+Fit stress thresholds from training rows only. At `t+h`, stress is one if at least one is true:
+
+```text
+relative spread >= train Q95
+fixed-notional price impact >= train Q95
+top-10 total depth <= train Q05
+trailing 60-second RV >= train Q95
+```
+
+The source brief's spread-only `spread > Q95` label is evaluated as sensitivity. Check positive prevalence before freezing labels; BTC spot spread can be pinned to one tick, making a strict-greater-than threshold uninformative.
+
+## Walk-forward, calibration, and reporting
+
+Use expanding chronological month folds. Purge training origins whose target window overlaps validation; then apply an embargo at least as long as the maximum of the target horizon, longest feature window, and deep sequence. Fit the flat threshold, stress quantiles, imputer, scaler, and calibration map only on training/validation data available at that fold.
+
+Compare direction models against a one-second persistence baseline and a class-frequency baseline; select models by validation macro F1 and MCC. Report balanced accuracy and per-class precision/recall. For probabilities, report Brier score and calibration curves. Compare stress models against current-state persistence; select stress models with PR-AUC and MCC, and report thresholded precision/recall and calibration. Keep December 2025 untouched until model choice is final, and score it once.
+
+Report results by symbol, horizon, month, and three volatility regimes based on trailing RV terciles. Include class distribution, feature summaries, confusion matrices, calibration, latency, model size, and actual data coverage. The API does not calculate replacement probabilities when a trained artifact is missing.

@@ -1,4 +1,4 @@
-"""Load runtime settings for the active LOB-only collector and research pipeline."""
+"""Load runtime settings shared by replay API and offline research scripts."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ DEFAULT_SETTINGS_PATH = REPOSITORY_ROOT / "config" / "settings.yaml"
 @dataclass(frozen=True)
 class Settings:
     symbols: tuple[str, ...] = ("BTCUSDT", "ETHUSDT")
-    data_dir: Path = REPOSITORY_ROOT / "data"
+    data_dir: Path = REPOSITORY_ROOT / "data_processed" / "cryptohftdata"
     binance_base_url: str = "https://data-api.binance.vision"
     binance_fallback_urls: tuple[str, ...] = (
         "https://api.binance.com",
@@ -28,7 +28,7 @@ class Settings:
     )
     request_timeout_seconds: float = 4.0
     request_retries: int = 2
-    lob_collection_enabled: bool = True
+    lob_collection_enabled: bool = False
     lob_ws_url: str = "wss://stream.binance.com:443"
     lob_ws_fallback_urls: tuple[str, ...] = (
         "wss://data-stream.binance.vision:443",
@@ -53,6 +53,19 @@ class Settings:
     lob_long_online_minimum_train_examples: int = 30
     lob_long_online_maximum_train_examples: int = 500
     lob_long_minimum_daily_coverage: float = 0.995
+    lob_classification_horizons_seconds: tuple[int, ...] = (1, 5, 10)
+    lob_primary_horizon_seconds: int = 5
+    lob_direction_delta_quantile: float = 0.5
+    lob_stress_quantile: float = 0.95
+    lob_stress_depth_quantile: float = 0.05
+    lob_stress_impact_notional_usdt: float = 1000.0
+    lob_first_validation_month: str = "2025-08"
+    lob_development_end_utc: str = "2025-11-30T23:59:59Z"
+    lob_untouched_test_start_utc: str = "2025-12-01T00:00:00Z"
+    lob_untouched_test_end_utc: str = "2025-12-31T23:59:59Z"
+    lob_embargo_seconds: int = 300
+    lob_feature_lookback_seconds: int = 300
+    lob_deeplob_lookback_seconds: int = 100
 
     def __post_init__(self) -> None:
         if not self.symbols or len(set(self.symbols)) != len(self.symbols):
@@ -89,6 +102,17 @@ class Settings:
             raise ValueError("lob.long_online_maximum_train_examples must be at least the long minimum")
         if not 0.9 <= self.lob_long_minimum_daily_coverage <= 1:
             raise ValueError("lob.minimum_daily_coverage must be in [0.9, 1]")
+        if not self.lob_classification_horizons_seconds or any(value not in (1, 5, 10) for value in self.lob_classification_horizons_seconds):
+            raise ValueError("lob.classification_horizons_seconds must use the configured 1, 5, and 10 second horizons")
+        if self.lob_primary_horizon_seconds not in self.lob_classification_horizons_seconds:
+            raise ValueError("lob.primary_horizon_seconds must be one of the configured classification horizons")
+        if not 0 < self.lob_direction_delta_quantile < 1 or not 0 < self.lob_stress_depth_quantile < self.lob_stress_quantile < 1:
+            raise ValueError("Direction and stress quantiles must be ordered inside (0, 1)")
+        if self.lob_stress_impact_notional_usdt <= 0 or min(self.lob_embargo_seconds, self.lob_feature_lookback_seconds, self.lob_deeplob_lookback_seconds) < 1:
+            raise ValueError("Impact notional, feature lookback, deep-model lookback, and embargo must be positive")
+        minimum_embargo = max(max(self.lob_classification_horizons_seconds), self.lob_feature_lookback_seconds, self.lob_deeplob_lookback_seconds)
+        if self.lob_embargo_seconds < minimum_embargo:
+            raise ValueError("lob.embargo_seconds must cover the horizon, longest feature lookback, and DeepLOB sequence")
         if self.request_timeout_seconds <= 0 or self.request_retries < 1:
             raise ValueError("Binance timeout and retry settings must be positive")
 
@@ -112,7 +136,7 @@ def load_settings(path: Path | str | None = None) -> Settings:
         symbols_data = yaml.safe_load(symbols_path.read_text(encoding="utf-8")) if symbols_path.exists() else None
         symbols_raw = (symbols_data or {}).get("symbols", ["BTCUSDT", "ETHUSDT"])
     symbols = tuple(str(symbol).upper() for symbol in symbols_raw)
-    data_dir = Path(data.get("directory", "data"))
+    data_dir = Path(data.get("directory", "data_processed/cryptohftdata"))
     if not data_dir.is_absolute():
         data_dir = REPOSITORY_ROOT / data_dir
     return Settings(
@@ -132,7 +156,7 @@ def load_settings(path: Path | str | None = None) -> Settings:
         ),
         request_timeout_seconds=float(binance.get("timeout_seconds", 4)),
         request_retries=int(binance.get("retries", 2)),
-        lob_collection_enabled=bool(lob.get("collection_enabled", True)),
+        lob_collection_enabled=bool(lob.get("collection_enabled", False)),
         lob_ws_url=str(lob.get("websocket_base_url", "wss://stream.binance.com:443")).rstrip("/"),
         lob_ws_fallback_urls=tuple(
             str(value).rstrip("/") for value in lob.get("websocket_fallback_urls", [
@@ -159,4 +183,17 @@ def load_settings(path: Path | str | None = None) -> Settings:
         lob_long_online_minimum_train_examples=int(lob.get("long_online_minimum_train_examples", 30)),
         lob_long_online_maximum_train_examples=int(lob.get("long_online_maximum_train_examples", 500)),
         lob_long_minimum_daily_coverage=float(lob.get("minimum_daily_coverage", 0.995)),
+        lob_classification_horizons_seconds=tuple(int(value) for value in lob.get("classification_horizons_seconds", [1, 5, 10])),
+        lob_primary_horizon_seconds=int(lob.get("primary_horizon_seconds", 5)),
+        lob_direction_delta_quantile=float(lob.get("direction_delta_quantile", 0.5)),
+        lob_stress_quantile=float(lob.get("stress_quantile", 0.95)),
+        lob_stress_depth_quantile=float(lob.get("stress_depth_quantile", 0.05)),
+        lob_stress_impact_notional_usdt=float(lob.get("stress_impact_notional_usdt", 1000)),
+        lob_first_validation_month=str(lob.get("first_validation_month", "2025-08")),
+        lob_development_end_utc=str(lob.get("development_end_utc", "2025-11-30T23:59:59Z")),
+        lob_untouched_test_start_utc=str(lob.get("untouched_test_start_utc", "2025-12-01T00:00:00Z")),
+        lob_untouched_test_end_utc=str(lob.get("untouched_test_end_utc", "2025-12-31T23:59:59Z")),
+        lob_embargo_seconds=int(lob.get("embargo_seconds", 300)),
+        lob_feature_lookback_seconds=int(lob.get("feature_lookback_seconds", 300)),
+        lob_deeplob_lookback_seconds=int(lob.get("deeplob_lookback_seconds", 100)),
     )

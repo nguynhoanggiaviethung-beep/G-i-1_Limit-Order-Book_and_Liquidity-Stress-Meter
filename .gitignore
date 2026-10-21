@@ -5,6 +5,11 @@ data/features/
 data/snapshots/
 data/external/
 data/state/
+data_raw/
+data_processed/
+backend/artifacts/meter/
+outputs/*
+!outputs/.gitkeep
 logs/
 .env
 .env.*
