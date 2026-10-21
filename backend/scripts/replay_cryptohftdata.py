@@ -1,9 +1,10 @@
-"""Replay one normalized CryptoHFTData NDJSON event stream into daily book grids."""
+"""Replay an ordered L2/trade event stream or capture folder into daily book grids."""
 
 from __future__ import annotations
 
 import argparse
 import gzip
+import heapq
 import json
 import os
 import sys
@@ -32,6 +33,28 @@ def _read_jsonl(path: Path) -> Iterator[dict]:
             if not isinstance(record, dict):
                 raise ValueError(f"Expected a JSON object at {path}:{line_number}")
             yield record
+
+
+def _record_time_ms(record: dict) -> int:
+    payload = record.get("data", record)
+    for name in ("event_time_ms", "E", "T", "trade_timestamp_ms", "timestamp_ms"):
+        value = payload.get(name) if isinstance(payload, dict) else None
+        if value is not None:
+            return int(value)
+    raise ValueError("Every replay event needs an exchange event timestamp")
+
+
+def _read_event_path(path: Path) -> Iterator[dict]:
+    if path.is_file():
+        if path.suffix.lower() not in {".gz", ".jsonl", ".ndjson"} and not path.name.endswith(".jsonl.gz"):
+            raise ValueError(f"Expected JSONL/JSONL.GZ input, got {path}")
+        yield from _read_jsonl(path)
+        return
+    files = sorted(path.rglob("*.jsonl.gz")) + sorted(path.rglob("*.jsonl")) + sorted(path.rglob("*.ndjson"))
+    if not files:
+        raise ValueError(f"No JSONL event files found under {path}")
+    streams = [_read_jsonl(file) for file in files]
+    yield from heapq.merge(*streams, key=_record_time_ms)
 
 
 def _write_day(output_root: Path, symbol: str, day: str, rows: list[dict], qa: dict[str, int]) -> None:
@@ -66,14 +89,14 @@ def _write_day(output_root: Path, symbol: str, day: str, rows: list[dict], qa: d
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", required=True, type=Path, help="Chronologically ordered raw JSONL/JSONL.GZ event stream")
+    parser.add_argument("--input", required=True, type=Path, help="Ordered JSONL/JSONL.GZ file or a capture events directory")
     parser.add_argument("--symbol", required=True, choices=("BTCUSDT", "ETHUSDT"))
     parser.add_argument("--tick-size", type=float, help="Override configured price tick size")
-    parser.add_argument("--output-root", type=Path, help="Defaults to data_processed/cryptohftdata/grid")
+    parser.add_argument("--output-root", type=Path, help="Defaults to the configured processed-data grid directory")
     parser.add_argument("--max-event-age-seconds", type=int, default=2)
     args = parser.parse_args()
-    if not args.input.is_file():
-        raise SystemExit(f"Input event stream does not exist: {args.input}")
+    if not args.input.exists() or not (args.input.is_file() or args.input.is_dir()):
+        raise SystemExit(f"Input event stream or capture directory does not exist: {args.input}")
     settings = load_settings()
     tick_size = args.tick_size if args.tick_size is not None else settings.tick_size_for(args.symbol)
     output_root = args.output_root or (settings.data_dir / "grid")
@@ -94,7 +117,7 @@ def main() -> int:
             _write_day(output_root, args.symbol, completed_day, [], replay.daily_qa[completed_day])
             written_days.add(completed_day)
 
-    for record in _read_jsonl(args.input):
+    for record in _read_event_path(args.input):
         for row in replay.feed(record):
             day = pd.Timestamp(row["timestamp_utc"]).date().isoformat()
             if buffered_day is None:

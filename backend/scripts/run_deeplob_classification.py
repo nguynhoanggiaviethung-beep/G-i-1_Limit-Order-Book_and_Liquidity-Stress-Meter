@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.core.config import REPOSITORY_ROOT, load_settings
 from app.evaluation.lob_classification import classification_metrics, paired_classification_tests
 from app.labels.direction import fit_direction_delta, make_direction_labels
-from app.labels.stress import fit_stress_thresholds, make_stress_labels, monthly_positive_rates
+from app.labels.stress import fit_primary_stress_thresholds, make_stress_labels, monthly_positive_rates
 from app.models.deeplob_classifier import DeepLOBClassifier, build_lob_sequences
 from app.models.lob_classifiers import LOB_CLASSIFICATION_FEATURES, make_classifiers
 from scripts.run_lob_classification import (
@@ -155,8 +155,9 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], settings, allow_repeat: b
             except RuntimeError as exc:
                 direction_folds.append({"month": month, "status": "skipped", "reason": str(exc)})
 
-            stress_thresholds = fit_stress_thresholds(
-                _stress_threshold_rows(frame, times < cutoff),
+            stress_thresholds = fit_primary_stress_thresholds(
+                _stress_threshold_rows(frame, times < cutoff, settings.lob_stress_definition),
+                settings.lob_stress_definition,
                 settings.lob_stress_quantile,
                 settings.lob_stress_depth_quantile,
             )
@@ -170,8 +171,9 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], settings, allow_repeat: b
             except RuntimeError as exc:
                 stress_folds.append({"month": month, "status": "skipped", "reason": str(exc), "thresholds": stress_thresholds.as_dict()})
 
-        final_thresholds = fit_stress_thresholds(
-            _stress_threshold_rows(frame, times < dev_cutoff),
+        final_thresholds = fit_primary_stress_thresholds(
+            _stress_threshold_rows(frame, times < dev_cutoff, settings.lob_stress_definition),
+            settings.lob_stress_definition,
             settings.lob_stress_quantile,
             settings.lob_stress_depth_quantile,
         )

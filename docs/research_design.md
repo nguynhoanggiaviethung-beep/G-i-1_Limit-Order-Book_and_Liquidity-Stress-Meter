@@ -15,24 +15,24 @@ The study tests whether order-book state and order flow provide point-in-time in
 | Decision | Default |
 |---|---|
 | Market | Binance Spot BTCUSDT and ETHUSDT |
-| Data | CryptoHFTData L2 book events and trades, 2025-06-28 to 2025-12-31 UTC |
+| Data | Approved CryptoHFTData L2 book events and trades for the frozen 2025 study period; public Binance Spot captures may extend the pipeline prospectively |
 | Sampling | Clock-time one-second grid |
 | Book depth | 20 levels per side; OBI sensitivity at L=1, 5, 10, 20 |
 | Horizons | 1, 5, 10 seconds; 5 seconds is primary |
 | Direction classes | Up / flat / down, with symbol- and horizon-specific delta fitted on the first training fold and then frozen |
-| Stress label | Composite tick spread, symbol-sized price impact, top-10 notional depth, and 60-second realized volatility; thresholds fitted on train only and positive prevalence constrained to 2–10% |
+| Stress label | Primary: future spread above train-only Q95. Optional extension: composite spread/impact/depth/RV label, reported separately. |
 | Impact notional | BTCUSDT 250,000 USDT; ETHUSDT 100,000 USDT; override through settings |
 | Development | Expanding walk-forward through 2025-11-30 |
 | Final test | 2025-12-01 through 2025-12-31, opened once after model selection |
 | Embargo | At least the maximum of the forecast horizon, 300-second feature lookback, and 100-second deep-model sequence |
 | Exchange extension | Coinbase cross-exchange validation is out of scope for the primary study |
-| Product mode | Historical replay; live depth feed is deferred |
+| Product mode | Read-only replay dashboard; an explicit CLI collector records live depth for later replay |
 
 The primary source-data range may have incomplete coverage. The final report must state actual valid seconds, coverage, missing intervals, and sequence-gap recoveries; it must not describe absent periods as observed.
 
 ## Data and replay
 
-The source is historical Level 2 order-book events and trades. Replay each symbol independently from snapshot and update IDs. A sequence gap invalidates the book until a complete snapshot is applied. Emit a one-second row only when the state is valid and no more than two seconds old. Do not interpolate missing book states.
+The frozen 2025 study requires historical Level 2 order-book events and trades; public REST aggregate trades cannot replace historical depth. The acquisition pipeline can also capture new Binance Spot depth and trades prospectively. Replay each symbol independently from snapshot and update IDs. A sequence gap invalidates the book until a complete snapshot is applied. Emit a one-second row only when the state is valid and no more than two seconds old. Do not interpolate missing book states.
 
 Every row retains exchange event time and local receive time separately. Sequence order, not local receive time, determines event application and OFI. Store raw source files and checksums outside Git. Store normalized grids in date and symbol Parquet partitions.
 
@@ -54,7 +54,7 @@ No feature window may cross an invalid second or sequence gap. Any scaler, imput
 
 Direction uses the mid-price at origin `t` and the exact mid-price at `t+h`. A sample is eligible only if every one-second state from `t` through `t+h` is valid and contiguous. The flat-band threshold `delta` is estimated from absolute future mid-price changes in the first training fold for each symbol and horizon, then held fixed.
 
-Liquidity stress at `t+h` is one if any train-derived condition is met: spread ticks above their 97.5th percentile, fixed-notional price impact above its 97.5th percentile, top-10 notional depth below its 2.5th percentile, or trailing 60-second realized variance above its 97.5th percentile. These more selective starting quantiles account for the four-way OR label. The final development forward-label prevalence must be in the configured 2–10% range before the untouched test can be scored; report development and test rates by month. Also report a strict spread-only `spread_ticks > train Q95` sensitivity result and its monthly prevalence; mark it unavailable if its train labels collapse to one class.
+Primary liquidity stress at `t+h` is one when the configured spread metric exceeds its 95th percentile fitted on the applicable training fold. The selected metric is `spread_ticks` when available, then absolute or relative spread. The label uses a strict greater-than comparison and leaves incomplete future windows unlabeled. Report class prevalence by split and month. If the composite extension is enabled, fit each component threshold on training rows only and report it separately; never combine or switch label definitions after inspecting final-test results.
 
 ## Models and validation
 
@@ -71,4 +71,4 @@ Report metrics by month and by three causal volatility regimes formed from trail
 
 ## Product boundary
 
-The Liquidity Stress Meter is a read-only replay product. It shows spread, top-depth imbalance, OFI, `P(up)`, `P(flat)`, `P(down)`, liquidity-stress probability, model version, and book-quality status. Live order-book streaming is a later extension. If replay data or a compatible trained model is absent, the API and dashboard show an explicit unavailable state.
+The Liquidity Stress Meter is a read-only replay product. It shows spread, top-depth imbalance, OFI, `P(up)`, `P(flat)`, `P(down)`, liquidity-stress probability, model version, and book-quality status. Live capture is an explicit data-acquisition command; it is not an order-entry feature or a direct dashboard feed. If replay data or a compatible trained model is absent, the API and dashboard show an explicit unavailable state.

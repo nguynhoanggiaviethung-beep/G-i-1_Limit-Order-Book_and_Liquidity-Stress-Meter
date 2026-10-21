@@ -13,16 +13,17 @@ from app.labels.direction import valid_future_origins
 @dataclass(frozen=True)
 class StressThresholds:
     spread_upper: float
-    impact_upper: float
-    depth_lower: float
-    rv_60_upper: float
+    impact_upper: float | None
+    depth_lower: float | None
+    rv_60_upper: float | None
     positive_rate_train: float
     upper_quantile: float = 0.975
     depth_quantile: float = 0.025
     spread_metric: str = "spread_ticks"
     depth_metric: str = "depth_notional_10"
+    definition: str = "composite"
 
-    def as_dict(self) -> dict[str, float | str]:
+    def as_dict(self) -> dict[str, float | str | None]:
         return asdict(self)
 
 
@@ -66,11 +67,46 @@ def fit_stress_thresholds(
         depth_quantile=depth_quantile,
         spread_metric=spread_name,
         depth_metric=depth_name,
+        definition="composite",
+    )
+
+
+def fit_primary_stress_thresholds(
+    training_frame: pd.DataFrame,
+    definition: str = "spread_only",
+    upper_quantile: float = 0.95,
+    depth_quantile: float = 0.025,
+) -> StressThresholds:
+    """Fit the configured primary stress label using training rows only."""
+    if definition == "composite":
+        return fit_stress_thresholds(training_frame, upper_quantile, depth_quantile)
+    if definition != "spread_only":
+        raise ValueError("Stress definition must be 'spread_only' or 'composite'")
+    metric, threshold = fit_spread_only_threshold(training_frame, upper_quantile)
+    values = pd.to_numeric(training_frame[metric], errors="coerce")
+    if "book_valid" in training_frame:
+        values = values.where(training_frame["book_valid"].fillna(False).astype(bool))
+    valid = values.notna()
+    prevalence = float((values.loc[valid] > threshold).mean()) if valid.any() else float("nan")
+    return StressThresholds(
+        spread_upper=threshold,
+        impact_upper=None,
+        depth_lower=None,
+        rv_60_upper=None,
+        positive_rate_train=prevalence,
+        upper_quantile=upper_quantile,
+        depth_quantile=depth_quantile,
+        spread_metric=metric,
+        definition="spread_only",
     )
 
 
 def make_stress_labels(frame: pd.DataFrame, horizon_seconds: int, thresholds: StressThresholds) -> pd.Series:
-    """Mark future spread/impact/depth/RV stress; gaps remain unlabeled."""
+    """Mark the configured future stress state; gaps remain unlabeled."""
+    if thresholds.definition == "spread_only":
+        return make_spread_only_labels(
+            frame, horizon_seconds, thresholds.spread_metric, thresholds.spread_upper
+        ).rename("stress_label")
     spread_name = thresholds.spread_metric if thresholds.spread_metric in frame else next(
         (name for name in ("spread_ticks", "absolute_spread", "relative_spread_bps") if name in frame),
         None,

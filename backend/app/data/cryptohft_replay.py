@@ -1,12 +1,15 @@
-"""Replay normalized raw CryptoHFTData events into a validated one-second L2 grid."""
+"""Replay normalized raw L2/trade events into a validated one-second book grid."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from math import isfinite
 from typing import Any, Iterable, Iterator
 
 from app.features.ofi import event_ofi
 from app.orderbook.book_state import InvalidBook, LocalOrderBook, SequenceGap
+
+MAX_EVENT_TIME_REORDER_MS = 100
 
 
 def _iso_utc(milliseconds: int | None) -> str | None:
@@ -46,6 +49,8 @@ def normalize_event(record: dict[str, Any]) -> dict[str, Any]:
     event = dict(payload)
     event["kind"] = kind
     event["event_time_ms"] = int(timestamp)
+    if payload.get("s", payload.get("symbol")) is not None:
+        event["symbol"] = str(payload.get("s", payload.get("symbol"))).upper()
     if kind == "depth_update":
         event["E"] = int(payload.get("E", timestamp))
         event["T"] = int(payload["T"]) if payload.get("T") is not None else None
@@ -53,6 +58,7 @@ def normalize_event(record: dict[str, Any]) -> dict[str, Any]:
         event["p"] = payload.get("p", payload.get("price"))
         event["q"] = payload.get("q", payload.get("quantity"))
         event["m"] = payload.get("m", payload.get("is_buyer_maker"))
+        event["trade_timestamp_ms"] = int(payload.get("trade_timestamp_ms", payload.get("T", payload.get("trade_ts", timestamp))))
     return event
 
 
@@ -73,14 +79,22 @@ class OneSecondBookReplay:
         self.recovered_second: int | None = None
         self._snapshot_seen = False
         self._reset_bucket()
-        self.qa = {"expected_seconds": 0, "valid_seconds": 0, "dropped_seconds": 0, "sequence_gap_count": 0, "snapshot_bootstraps": 0, "snapshot_recoveries": 0}
+        self.qa = {
+            "expected_seconds": 0, "valid_seconds": 0, "dropped_seconds": 0,
+            "sequence_gap_count": 0, "snapshot_bootstraps": 0, "snapshot_recoveries": 0,
+            "event_time_order_adjustments": 0, "max_event_time_lateness_ms": 0,
+        }
         self.daily_qa: dict[str, dict[str, int]] = {}
 
     def _daily_counter(self, second: int | None = None, timestamp_ms: int | None = None) -> dict[str, int]:
         if timestamp_ms is None:
             timestamp_ms = int(second or 0) * 1000
         day = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).date().isoformat()
-        return self.daily_qa.setdefault(day, {"expected_seconds": 0, "valid_seconds": 0, "dropped_seconds": 0, "sequence_gap_count": 0, "snapshot_bootstraps": 0, "snapshot_recoveries": 0})
+        return self.daily_qa.setdefault(day, {
+            "expected_seconds": 0, "valid_seconds": 0, "dropped_seconds": 0,
+            "sequence_gap_count": 0, "snapshot_bootstraps": 0, "snapshot_recoveries": 0,
+            "event_time_order_adjustments": 0, "max_event_time_lateness_ms": 0,
+        })
 
     def _reset_bucket(self) -> None:
         self.ofi_sum = 0.0
@@ -96,9 +110,24 @@ class OneSecondBookReplay:
 
     def feed(self, raw_record: dict[str, Any]) -> Iterator[dict[str, Any]]:
         event = normalize_event(raw_record)
+        if event.get("symbol") and event["symbol"] != self.symbol:
+            raise ValueError(f"Event symbol {event['symbol']} does not match replay symbol {self.symbol}")
         timestamp = event["event_time_ms"]
         if self.last_input_timestamp_ms is not None and timestamp < self.last_input_timestamp_ms:
-            raise ValueError("Raw event file is not ordered by exchange event time")
+            lateness_ms = self.last_input_timestamp_ms - timestamp
+            if lateness_ms > MAX_EVENT_TIME_REORDER_MS:
+                raise ValueError(
+                    f"Raw event time moved backwards by {lateness_ms} ms, exceeding the "
+                    f"{MAX_EVENT_TIME_REORDER_MS} ms cross-stream tolerance"
+                )
+            self.qa["event_time_order_adjustments"] += 1
+            self.qa["max_event_time_lateness_ms"] = max(self.qa["max_event_time_lateness_ms"], lateness_ms)
+            daily_qa = self._daily_counter(timestamp_ms=timestamp)
+            daily_qa["event_time_order_adjustments"] += 1
+            daily_qa["max_event_time_lateness_ms"] = max(daily_qa["max_event_time_lateness_ms"], lateness_ms)
+            # Depth sequence is applied in stream order. Clamp only the replay
+            # bucket clock; preserve the original exchange timestamp on event.
+            timestamp = self.last_input_timestamp_ms
         self.last_input_timestamp_ms = timestamp
         # Exchange events are accumulated in (t-1s, t] and sampled on the
         # next UTC second boundary. An event exactly at a boundary belongs to it.
@@ -141,7 +170,8 @@ class OneSecondBookReplay:
         except (KeyError, TypeError, ValueError, InvalidBook) as exc:
             self.book = None
             raise ValueError(f"Invalid order-book snapshot: {exc}") from exc
-        self.book.event_time_ms = event["event_time_ms"]
+        self.book.event_time_ms = int(event.get("book_event_time_ms", event["event_time_ms"]))
+        self.book.received_at_utc = event.get("received_at_utc")
         if not self._snapshot_seen:
             self.qa["snapshot_bootstraps"] += 1
             self._daily_counter(timestamp_ms=event["event_time_ms"])["snapshot_bootstraps"] += 1
@@ -156,11 +186,16 @@ class OneSecondBookReplay:
         levels = book.bids if side == "bid" else book.asks
         additions = deletions = 0.0
         for price_raw, quantity_raw, *_ in changes:
-            from decimal import Decimal
+            from decimal import Decimal, InvalidOperation
 
-            price = Decimal(str(price_raw))
+            try:
+                price = Decimal(str(price_raw))
+                current = Decimal(str(quantity_raw))
+            except (InvalidOperation, ValueError) as exc:
+                raise ValueError("Depth update contains a non-numeric level") from exc
             previous = levels.get(price, Decimal(0))
-            current = Decimal(str(quantity_raw))
+            if not price.is_finite() or not current.is_finite() or price <= 0 or current < 0:
+                raise ValueError("Depth update contains a non-finite or invalid level")
             difference = current - previous
             if difference > 0:
                 additions += float(difference)
@@ -212,19 +247,24 @@ class OneSecondBookReplay:
         try:
             quantity = float(event["q"])
             price = float(event["p"])
-            if quantity < 0 or price <= 0:
+            if not isfinite(quantity) or not isfinite(price) or quantity <= 0 or price <= 0:
                 return
             # Binance buyer-maker true means the buyer was passive, so the
             # aggressive trade was a sell.
             buyer_maker = event["m"]
             if isinstance(buyer_maker, str):
-                buyer_maker = buyer_maker.strip().lower() in {"true", "1", "yes"}
+                normalized = buyer_maker.strip().lower()
+                if normalized not in {"true", "1", "yes", "false", "0", "no"}:
+                    return
+                buyer_maker = normalized in {"true", "1", "yes"}
+            elif not isinstance(buyer_maker, bool):
+                return
             if bool(buyer_maker):
                 self.aggressive_sell_volume += quantity
             else:
                 self.aggressive_buy_volume += quantity
             self.last_trade_price = str(event["p"])
-            self.last_trade_time_ms = event["event_time_ms"]
+            self.last_trade_time_ms = int(event.get("trade_timestamp_ms", event["event_time_ms"]))
             self.trade_count += 1
         except (KeyError, TypeError, ValueError):
             return
@@ -254,11 +294,11 @@ class OneSecondBookReplay:
             "symbol": self.symbol,
             "timestamp_utc": _iso_utc(sample_time_ms),
             "event_time_utc": _iso_utc(self.book.event_time_ms),
-            "received_at_utc": None,
+            "received_at_utc": self.book.received_at_utc,
             "first_update_id": self.first_update_id,
             "last_update_id": self.last_update_id or self.book.last_update_id,
             "book_valid": True,
-            "sequence_gap": False,
+            "sequence_gap": self.last_gap_second == second,
             "seconds_since_gap": second - self.recovered_second if self.recovered_second is not None else None,
             "ofi_1s": self.ofi_sum,
             "aggressive_buy_volume_1s": self.aggressive_buy_volume,

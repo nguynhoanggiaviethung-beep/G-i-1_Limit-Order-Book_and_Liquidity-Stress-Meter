@@ -104,6 +104,8 @@ class LocalOrderBook:
             self.last_update_id = final_id
             self.event_time_ms = int(event["E"]) if event.get("E") is not None else None
             self.transaction_time_ms = int(event["T"]) if event.get("T") is not None else None
+            if event.get("received_at_utc") is not None:
+                self.received_at_utc = str(event["received_at_utc"])
             self.validate()
         except (InvalidBook, KeyError, TypeError, ValueError) as exc:
             self.invalidate(str(exc))

@@ -16,7 +16,9 @@ DEFAULT_SETTINGS_PATH = REPOSITORY_ROOT / "config" / "settings.yaml"
 @dataclass(frozen=True)
 class Settings:
     symbols: tuple[str, ...] = ("BTCUSDT", "ETHUSDT")
-    data_dir: Path = REPOSITORY_ROOT / "data_processed" / "cryptohftdata"
+    data_dir: Path = REPOSITORY_ROOT / "data_processed" / "lob"
+    raw_data_dir: Path = REPOSITORY_ROOT / "data_raw" / "binance_spot"
+    interim_data_dir: Path = REPOSITORY_ROOT / "data_interim" / "binance_spot"
     binance_base_url: str = "https://data-api.binance.vision"
     binance_fallback_urls: tuple[str, ...] = (
         "https://api.binance.com",
@@ -28,7 +30,7 @@ class Settings:
     )
     request_timeout_seconds: float = 4.0
     request_retries: int = 2
-    lob_collection_enabled: bool = False
+    lob_collection_enabled: bool = True
     lob_ws_url: str = "wss://stream.binance.com:443"
     lob_ws_fallback_urls: tuple[str, ...] = (
         "wss://data-stream.binance.vision:443",
@@ -56,7 +58,8 @@ class Settings:
     lob_classification_horizons_seconds: tuple[int, ...] = (1, 5, 10)
     lob_primary_horizon_seconds: int = 5
     lob_direction_delta_quantile: float = 0.5
-    lob_stress_quantile: float = 0.975
+    lob_stress_definition: str = "spread_only"
+    lob_stress_quantile: float = 0.95
     lob_stress_depth_quantile: float = 0.025
     lob_stress_impact_notional_usdt: float = 100000.0
     lob_stress_impact_notional_by_symbol: dict[str, float] | None = None
@@ -121,6 +124,8 @@ class Settings:
             raise ValueError("lob.classification_horizons_seconds must use the configured 1, 5, and 10 second horizons")
         if self.lob_primary_horizon_seconds not in self.lob_classification_horizons_seconds:
             raise ValueError("lob.primary_horizon_seconds must be one of the configured classification horizons")
+        if self.lob_stress_definition not in {"spread_only", "composite"}:
+            raise ValueError("lob.stress_definition must be 'spread_only' or 'composite'")
         if not 0 < self.lob_direction_delta_quantile < 1 or not 0 < self.lob_stress_depth_quantile < self.lob_stress_quantile < 1:
             raise ValueError("Direction and stress quantiles must be ordered inside (0, 1)")
         if self.lob_stress_impact_notional_usdt <= 0 or min(self.lob_embargo_seconds, self.lob_feature_lookback_seconds, self.lob_deeplob_lookback_seconds) < 1:
@@ -159,12 +164,20 @@ def load_settings(path: Path | str | None = None) -> Settings:
         symbols_data = yaml.safe_load(symbols_path.read_text(encoding="utf-8")) if symbols_path.exists() else None
         symbols_raw = (symbols_data or {}).get("symbols", ["BTCUSDT", "ETHUSDT"])
     symbols = tuple(str(symbol).upper() for symbol in symbols_raw)
-    data_dir = Path(data.get("directory", "data_processed/cryptohftdata"))
+    data_dir = Path(data.get("directory", "data_processed/lob"))
     if not data_dir.is_absolute():
         data_dir = REPOSITORY_ROOT / data_dir
+    raw_data_dir = Path(data.get("raw_directory", "data_raw/binance_spot"))
+    if not raw_data_dir.is_absolute():
+        raw_data_dir = REPOSITORY_ROOT / raw_data_dir
+    interim_data_dir = Path(data.get("interim_directory", "data_interim/binance_spot"))
+    if not interim_data_dir.is_absolute():
+        interim_data_dir = REPOSITORY_ROOT / interim_data_dir
     return Settings(
         symbols=symbols,
         data_dir=data_dir,
+        raw_data_dir=raw_data_dir,
+        interim_data_dir=interim_data_dir,
         binance_base_url=str(binance.get("base_url", "https://data-api.binance.vision")).rstrip("/"),
         binance_fallback_urls=tuple(
             str(value).rstrip("/")
@@ -179,7 +192,7 @@ def load_settings(path: Path | str | None = None) -> Settings:
         ),
         request_timeout_seconds=float(binance.get("timeout_seconds", 4)),
         request_retries=int(binance.get("retries", 2)),
-        lob_collection_enabled=bool(lob.get("collection_enabled", False)),
+        lob_collection_enabled=bool(lob.get("collection_enabled", True)),
         lob_ws_url=str(lob.get("websocket_base_url", "wss://stream.binance.com:443")).rstrip("/"),
         lob_ws_fallback_urls=tuple(
             str(value).rstrip("/") for value in lob.get("websocket_fallback_urls", [
@@ -209,7 +222,8 @@ def load_settings(path: Path | str | None = None) -> Settings:
         lob_classification_horizons_seconds=tuple(int(value) for value in lob.get("classification_horizons_seconds", [1, 5, 10])),
         lob_primary_horizon_seconds=int(lob.get("primary_horizon_seconds", 5)),
         lob_direction_delta_quantile=float(lob.get("direction_delta_quantile", 0.5)),
-        lob_stress_quantile=float(lob.get("stress_quantile", 0.975)),
+        lob_stress_definition=str(lob.get("stress_definition", "spread_only")),
+        lob_stress_quantile=float(lob.get("stress_quantile", 0.95)),
         lob_stress_depth_quantile=float(lob.get("stress_depth_quantile", 0.025)),
         lob_stress_impact_notional_usdt=float(lob.get("stress_impact_notional_usdt", 100000)),
         lob_stress_impact_notional_by_symbol={

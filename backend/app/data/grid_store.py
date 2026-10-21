@@ -1,4 +1,4 @@
-"""Read normalized one-second CryptoHFTData replay grids from Parquet."""
+"""Read normalized one-second limit-order-book replay grids from Parquet."""
 
 from __future__ import annotations
 
@@ -11,10 +11,10 @@ from typing import Any
 import pandas as pd
 import pyarrow.parquet as pq
 
-from app.core.config import REPOSITORY_ROOT
+from app.core.config import REPOSITORY_ROOT, load_settings
 
 
-DEFAULT_GRID_ROOT = REPOSITORY_ROOT / "data_processed" / "cryptohftdata" / "grid"
+DEFAULT_GRID_ROOT = load_settings().data_dir / "grid"
 
 
 def _utc_timestamp(value: str | pd.Timestamp | None) -> pd.Timestamp | None:
@@ -97,7 +97,7 @@ class GridStore:
         return {
             "schema": "data_status.v1",
             "status": "ready" if any(item["status"] == "ready" for item in entries.values()) else "unavailable",
-            "source": "CryptoHFTData L2 order book and trades, normalized to a one-second grid",
+            "source": "Configured historical or captured L2 order book and trades, normalized to a one-second grid",
             "grid_root": str(self.root),
             "symbols": entries,
         }

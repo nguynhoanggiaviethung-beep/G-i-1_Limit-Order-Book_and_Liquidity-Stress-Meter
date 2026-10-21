@@ -5,14 +5,17 @@ All time fields are UTC. Raw prices and quantities should be kept as decimal str
 ## Source and normalized locations
 
 ```text
-data_raw/cryptohftdata/                         # source archive and approved checksum manifest
-data_processed/cryptohftdata/grid/
+data_raw/<provider>/                            # immutable source files and approved checksum manifests
+data_raw/binance_spot/captures/<capture-id>/    # raw websocket, REST snapshots, collector logs, and source manifest
+data_interim/binance_spot/captures/<capture-id>/events/
+                                                # normalized event stream used for deterministic replay
+data_processed/lob/grid/
   symbol=<SYMBOL>/date=YYYY-MM-DD/book_1s.parquet
-data_processed/cryptohftdata/features/
+data_processed/lob/features/
   symbol=<SYMBOL>/date=YYYY-MM-DD/features_1s.parquet
 ```
 
-The source dataset is external and is not committed to this repository. `backend/scripts/replay_cryptohftdata.py` accepts chronologically ordered JSONL/JSONL.GZ containing canonical event records or native Binance Spot snapshot, depthUpdate, and aggTrade messages. Map other provider-specific source schemas to this event format before replay. The replay API reads only normalized `book_1s.parquet` partitions.
+Historical L2 archives are external and are not committed to this repository. Raw WebSocket messages and REST snapshots are retained under `data_raw/`; the collector writes normalized replay events under `data_interim/`; grids and features go under `data_processed/`. `backend/scripts/collect_binance_lob.py` captures new public Spot diff-depth and aggregate-trade messages with synchronized REST snapshots; `backend/scripts/replay_cryptohftdata.py` replays the resulting event partitions or approved chronologically ordered JSONL/JSONL.GZ files containing canonical records or native Binance Spot snapshot, depthUpdate, and aggTrade messages. Binance REST aggregate trades contain no historical depth and cannot reconstruct a past book. Map other provider-specific source schemas to this event format before replay. The replay API reads only normalized `book_1s.parquet` partitions.
 
 Canonical raw event shapes:
 
@@ -72,6 +75,6 @@ All rolling windows reset at gaps. Every scaler, imputer, and threshold is fitte
 
 ## Target and result fields
 
-Direction targets are `up`, `flat`, or `down` at 1, 5, and 10 second horizons. Stress targets are binary and use train-only quantiles for spread, fixed-notional price impact, top-10 depth, and trailing RV. Store `target_end_utc`, `target_valid`, and the threshold version with every label dataset.
+Direction targets are `up`, `flat`, or `down` at 1, 5, and 10 second horizons. The primary stress target is binary: future spread exceeds the training-fold Q95, with `spread_ticks` preferred when present. A composite spread/impact/depth/RV label is a separately identified extension. Store `target_end_utc`, `target_valid`, the stress definition, and the threshold version with every label dataset.
 
 The meter response contains `timestamp_utc`, `horizon_seconds`, `spread`, imbalance at L=1/5/10/20, `ofi_5s`, `p_up`, `p_flat`, `p_down`, `p_stress`, `model_version`, and `quality`. Probability fields are null when the matching trained artifact is unavailable.

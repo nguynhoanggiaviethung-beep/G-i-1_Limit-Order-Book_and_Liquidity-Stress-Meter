@@ -62,16 +62,13 @@ down if change_(t,h) < -delta
 
 Estimate `delta` from the chosen quantile of absolute future mid-price changes in the first training fold for each symbol and horizon. Freeze it before model comparison. A label is missing if any state from `t` through `t+h` is absent or invalid.
 
-Fit stress thresholds from valid training rows only. To avoid the four-way OR producing too many positive labels, the configured starting cutoffs use Q97.5 for spread ticks, impact, and RV, and Q2.5 for top-10 notional depth. At `t+h`, stress is one if at least one strict condition is true:
+The primary stress label uses a single spread metric fitted on valid training rows only. At `t+h`, stress is one when future spread is strictly greater than the train-period Q95:
 
 ```text
-spread ticks > train Q97.5
-fixed-notional price impact > train Q97.5
-top-10 notional depth < train Q2.5
-trailing 60-second RV > train Q97.5
+future spread > train Q95
 ```
 
-The final development forward-label prevalence must fall in the configured 2–10% range or final-test scoring stops. Results also report positive prevalence by month. The source brief's spread-only `spread_ticks > Q95` label is evaluated as sensitivity and is marked degenerate when the train labels contain one class. BTC spot spread can be pinned to one tick, making that sensitivity uninformative.
+The selected spread metric is `spread_ticks` when available, then absolute or relative spread. Thresholds are fitted separately inside each walk-forward training fold. Incomplete future windows remain unlabeled. Report the resulting class prevalence by split and month; do not refit the threshold on validation or final-test rows. A composite spread/impact/depth/RV definition can be evaluated as a separately named extension.
 
 ## Walk-forward, calibration, and reporting
 

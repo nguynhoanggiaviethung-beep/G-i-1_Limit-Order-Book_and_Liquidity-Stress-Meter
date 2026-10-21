@@ -1,6 +1,8 @@
-# Historical LOB replay is the active research path. Binance live collection is an extension.
+# Public market data can be captured live; processed grids retain the existing replay contract.
 data:
-  directory: data_processed/cryptohftdata
+  directory: data_processed/lob
+  raw_directory: data_raw/binance_spot
+  interim_directory: data_interim/binance_spot
 binance:
   # Public market-data-only endpoint; rotate through official Spot REST alternatives if unavailable.
   base_url: https://data-api.binance.vision
@@ -14,7 +16,7 @@ binance:
   timeout_seconds: 4
   retries: 2
 lob:
-  collection_enabled: false
+  collection_enabled: true
   websocket_base_url: wss://stream.binance.com:443
   websocket_fallback_urls:
     - wss://data-stream.binance.vision:443
@@ -32,7 +34,8 @@ lob:
   primary_horizon_seconds: 5
   depth_levels: 20
   direction_delta_quantile: 0.5
-  stress_quantile: 0.975
+  stress_definition: spread_only
+  stress_quantile: 0.95
   stress_depth_quantile: 0.025
   stress_min_positive_rate: 0.02
   stress_max_positive_rate: 0.10

@@ -24,16 +24,18 @@ def bootstrap_book(
     """Install a snapshot once the buffered stream spans its update ID.
 
     If the snapshot predates the first buffered event, fetch a newer snapshot.
-    Events at or below the snapshot update ID are discarded. The first event
-    applied must overlap the snapshot update ID, as required by Binance.
+    Events ending at or below the snapshot update ID are discarded. The first
+    applied event must cover the next required update ID (lastUpdateId + 1).
     """
     events = list(buffered_events)
     snapshot_id = int(snapshot["lastUpdateId"])
+    if events and snapshot_id < int(events[0]["U"]):
+        return BootstrapResult(None, events, True, False)
     candidate_index = next((i for i, event in enumerate(events) if int(event["u"]) > snapshot_id), None)
     if candidate_index is None:
         return BootstrapResult(None, [], False, True)
     first = events[candidate_index]
-    if int(first["U"]) > snapshot_id:
+    if int(first["U"]) > snapshot_id + 1:
         return BootstrapResult(None, events, True, False)
     book = LocalOrderBook.from_snapshot(symbol, snapshot)
     book.apply_update(first)

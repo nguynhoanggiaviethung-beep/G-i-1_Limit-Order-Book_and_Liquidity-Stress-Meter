@@ -21,9 +21,8 @@ from app.core.config import REPOSITORY_ROOT, load_settings
 from app.evaluation.lob_classification import classification_metrics, paired_classification_tests
 from app.labels.direction import fit_direction_delta, make_direction_labels
 from app.labels.stress import (
-    fit_spread_only_threshold,
+    fit_primary_stress_thresholds,
     fit_stress_thresholds,
-    make_spread_only_labels,
     make_stress_labels,
     monthly_positive_rates,
 )
@@ -35,7 +34,7 @@ STRESS_CLASSES = (0, 1)
 
 
 def _load_features(symbol: str) -> pd.DataFrame:
-    root = REPOSITORY_ROOT / "data_processed" / "cryptohftdata" / "features"
+    root = load_settings().data_dir / "features"
     paths = sorted(root.rglob("features_1s.parquet"))
     paths = [path for path in paths if f"symbol={symbol}" in path.parts]
     if not paths:
@@ -86,18 +85,21 @@ def _direction_persistence_predictions(frame: pd.DataFrame, delta: float) -> np.
 
 
 def _current_stress_state(frame: pd.DataFrame, thresholds) -> np.ndarray:
-    impact_name = "price_impact_bps" if "price_impact_bps" in frame else "impact_bps"
     spread_name = thresholds.spread_metric if thresholds.spread_metric in frame else "spread_ticks"
+    spread_stress = pd.to_numeric(frame[spread_name], errors="coerce") > thresholds.spread_upper
+    if thresholds.definition == "spread_only":
+        return spread_stress.fillna(False).to_numpy(dtype=int)
+    impact_name = "price_impact_bps" if "price_impact_bps" in frame else "impact_bps"
     depth_name = thresholds.depth_metric if thresholds.depth_metric in frame else "depth_notional_10"
     return (
-        (pd.to_numeric(frame[spread_name], errors="coerce") > thresholds.spread_upper)
+        spread_stress
         | (pd.to_numeric(frame[impact_name], errors="coerce") > thresholds.impact_upper)
         | (pd.to_numeric(frame[depth_name], errors="coerce") < thresholds.depth_lower)
         | (pd.to_numeric(frame["rv_60s"], errors="coerce") > thresholds.rv_60_upper)
     ).fillna(False).to_numpy(dtype=int)
 
 
-def _stress_threshold_rows(frame: pd.DataFrame, time_mask: pd.Series) -> pd.DataFrame:
+def _stress_threshold_rows(frame: pd.DataFrame, time_mask: pd.Series, definition: str = "composite") -> pd.DataFrame:
     valid = time_mask.copy()
     if "book_valid" in frame:
         book_valid = frame["book_valid"]
@@ -107,6 +109,10 @@ def _stress_threshold_rows(frame: pd.DataFrame, time_mask: pd.Series) -> pd.Data
             book_valid = book_valid.fillna(False).astype(bool)
         valid &= book_valid
     spread_name = next((name for name in ("spread_ticks", "absolute_spread", "relative_spread_bps") if name in frame), None)
+    if definition == "spread_only":
+        if spread_name is None:
+            raise ValueError("Spread-only stress thresholds require a spread feature")
+        return frame.loc[valid & pd.to_numeric(frame[spread_name], errors="coerce").notna()]
     depth_name = next((name for name in ("depth_notional_10", "depth_qty_10") if name in frame), None)
     impact_name = next((name for name in ("price_impact_bps", "impact_bps") if name in frame), None)
     for name in (spread_name, impact_name, depth_name, "rv_60s"):
@@ -216,7 +222,7 @@ def _fit_final(task: str, name: str, x: pd.DataFrame, y: pd.Series, max_train_ro
     return estimator
 
 
-def _collect_selected_oos(task: str, model_name: str, frame: pd.DataFrame, times: pd.Series, horizon: int, delta: float, embargo_seconds: int, max_train_rows: int, folds: tuple[str, ...], stress_quantile: float, stress_depth_quantile: float):
+def _collect_selected_oos(task: str, model_name: str, frame: pd.DataFrame, times: pd.Series, horizon: int, delta: float, embargo_seconds: int, max_train_rows: int, folds: tuple[str, ...], stress_quantile: float, stress_depth_quantile: float, stress_definition: str = "spread_only"):
     class_order = DIRECTION_CLASSES if task == "direction" else STRESS_CLASSES
     truth_parts, probability_parts = [], []
     for month in folds:
@@ -226,7 +232,10 @@ def _collect_selected_oos(task: str, model_name: str, frame: pd.DataFrame, times
         if task == "direction":
             labels = make_direction_labels(frame, horizon, delta)
         else:
-            thresholds = fit_stress_thresholds(_stress_threshold_rows(frame, times < cutoff), stress_quantile, stress_depth_quantile)
+            thresholds = fit_primary_stress_thresholds(
+                _stress_threshold_rows(frame, times < cutoff, stress_definition),
+                stress_definition, stress_quantile, stress_depth_quantile,
+            )
             labels = make_stress_labels(frame, horizon, thresholds)
         train_mask = (times < cutoff) & labels.notna()
         valid_mask = (times >= start) & (times < end - pd.Timedelta(seconds=horizon)) & labels.notna()
@@ -322,8 +331,9 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
                 & (times < validation_end - pd.Timedelta(seconds=horizon))
                 & direction_labels.notna()
             )
-            stress_thresholds = fit_stress_thresholds(
-                _stress_threshold_rows(frame, times < train_end),
+            stress_thresholds = fit_primary_stress_thresholds(
+                _stress_threshold_rows(frame, times < train_end, settings.lob_stress_definition),
+                settings.lob_stress_definition,
                 settings.lob_stress_quantile,
                 settings.lob_stress_depth_quantile,
             )
@@ -429,8 +439,9 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
 
         direction_name = _select_model("direction", direction_scores)
         stress_name = _select_model("stress", stress_scores)
-        final_stress_thresholds = fit_stress_thresholds(
-            _stress_threshold_rows(frame, times < dev_cutoff),
+        final_stress_thresholds = fit_primary_stress_thresholds(
+            _stress_threshold_rows(frame, times < dev_cutoff, settings.lob_stress_definition),
+            settings.lob_stress_definition,
             settings.lob_stress_quantile,
             settings.lob_stress_depth_quantile,
         )
@@ -450,6 +461,7 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
         direction_oos_truth, direction_oos_probability = _collect_selected_oos(
             "direction", direction_name, frame, times, horizon, delta, embargo_seconds,
             max_train_rows, folds, settings.lob_stress_quantile, settings.lob_stress_depth_quantile,
+            settings.lob_stress_definition,
         )
         direction_calibrators = _fit_isotonic(direction_oos_truth, direction_oos_probability, DIRECTION_CLASSES)
         direction_probability = _apply_isotonic(direction_probability_raw, direction_calibrators)
@@ -490,6 +502,7 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
         stress_oos_truth, stress_oos_probability = _collect_selected_oos(
             "stress", stress_name, frame, times, horizon, delta, embargo_seconds,
             max_train_rows, folds, settings.lob_stress_quantile, settings.lob_stress_depth_quantile,
+            settings.lob_stress_definition,
         )
         stress_calibrator = _fit_stress_isotonic(stress_oos_truth, stress_oos_probability)
         stress_threshold_raw = _threshold_for_stress(stress_oos_probability[:, 1], stress_oos_truth) if len(stress_oos_truth) else 0.5
@@ -513,47 +526,48 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
             np.column_stack([1.0 - stress_probability, stress_probability]), stress_persistence_probability,
             stress=True, horizon_seconds=horizon,
         )
-        spread_metric, spread_only_threshold = fit_spread_only_threshold(
-            _stress_threshold_rows(frame, times < dev_cutoff), quantile=0.95
+        composite_thresholds = fit_stress_thresholds(
+            _stress_threshold_rows(frame, times < dev_cutoff, "composite"),
+            upper_quantile=0.975,
+            depth_quantile=0.025,
         )
-        spread_only_labels = make_spread_only_labels(frame, horizon, spread_metric, spread_only_threshold)
-        spread_only_train_mask = (times < dev_cutoff) & spread_only_labels.notna()
-        spread_only_test_mask = (times >= test_start) & (times < test_end - pd.Timedelta(seconds=horizon)) & spread_only_labels.notna()
-        spread_only_train_y = spread_only_labels.loc[spread_only_train_mask].astype(int)
-        spread_only_test_y = spread_only_labels.loc[spread_only_test_mask].astype(int)
-        spread_only_sensitivity: dict[str, object] = {
+        composite_labels = make_stress_labels(frame, horizon, composite_thresholds)
+        composite_train_mask = (times < dev_cutoff) & composite_labels.notna()
+        composite_test_mask = (times >= test_start) & (times < test_end - pd.Timedelta(seconds=horizon)) & composite_labels.notna()
+        composite_train_y = composite_labels.loc[composite_train_mask].astype(int)
+        composite_test_y = composite_labels.loc[composite_test_mask].astype(int)
+        composite_sensitivity: dict[str, object] = {
             "status": "unavailable",
-            "threshold_metric": spread_metric,
-            "threshold_quantile": 0.95,
-            "threshold_train": spread_only_threshold,
+            "definition": "composite_spread_impact_depth_rv",
+            "thresholds_train": composite_thresholds.as_dict(),
             "positive_rate_by_month_development": monthly_positive_rates(
-                spread_only_labels.loc[times < dev_cutoff], times.loc[times < dev_cutoff]
+                composite_labels.loc[times < dev_cutoff], times.loc[times < dev_cutoff]
             ),
             "positive_rate_by_month_test": monthly_positive_rates(
-                spread_only_labels.loc[spread_only_test_mask], times.loc[spread_only_test_mask]
+                composite_labels.loc[composite_test_mask], times.loc[composite_test_mask]
             ),
         }
-        if spread_only_train_y.nunique() == 2 and not spread_only_test_y.empty:
-            spread_only_model = _fit_final(
+        if composite_train_y.nunique() == 2 and not composite_test_y.empty:
+            composite_model = _fit_final(
                 "stress", stress_name,
-                frame.loc[spread_only_train_mask, LOB_CLASSIFICATION_FEATURES],
-                spread_only_train_y,
+                frame.loc[composite_train_mask, LOB_CLASSIFICATION_FEATURES],
+                composite_train_y,
                 max_train_rows,
             )
-            spread_only_x_test = frame.loc[spread_only_test_mask, LOB_CLASSIFICATION_FEATURES]
-            spread_only_probability = _align_probabilities(spread_only_model, spread_only_x_test, STRESS_CLASSES)
-            spread_only_prediction = (spread_only_probability[:, 1] >= 0.5).astype(int)
-            spread_only_sensitivity.update({
+            composite_x_test = frame.loc[composite_test_mask, LOB_CLASSIFICATION_FEATURES]
+            composite_probability = _align_probabilities(composite_model, composite_x_test, STRESS_CLASSES)
+            composite_prediction = (composite_probability[:, 1] >= 0.5).astype(int)
+            composite_sensitivity.update({
                 "status": "scored",
                 "test_metrics": classification_metrics(
-                    spread_only_test_y.to_numpy(), spread_only_prediction,
-                    spread_only_probability, labels=list(STRESS_CLASSES), stress=True,
+                    composite_test_y.to_numpy(), composite_prediction,
+                    composite_probability, labels=list(STRESS_CLASSES), stress=True,
                 ),
             })
-        elif spread_only_train_y.nunique() < 2:
-            spread_only_sensitivity["reason"] = "Train-only spread threshold produced a single class; sensitivity label is degenerate"
+        elif composite_train_y.nunique() < 2:
+            composite_sensitivity["reason"] = "Composite train-only thresholds produced a single class; extension label is degenerate"
         else:
-            spread_only_sensitivity["reason"] = "No valid untouched-test spread-only labels are available"
+            composite_sensitivity["reason"] = "No valid untouched-test composite labels are available"
         regime_training_rv = pd.to_numeric(frame.loc[times < dev_cutoff, "rv_300s"], errors="coerce").dropna()
         if len(regime_training_rv) and regime_training_rv.quantile(1 / 3) < regime_training_rv.quantile(2 / 3):
             regime_cutoffs = [float(regime_training_rv.quantile(1 / 3)), float(regime_training_rv.quantile(2 / 3))]
@@ -645,7 +659,7 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
             "stress_test": stress_test_metrics,
             "stress_test_raw": stress_test_metrics_raw,
             "stress_paired_tests_vs_persistence": stress_pairwise,
-            "stress_spread_only_sensitivity": spread_only_sensitivity,
+            "stress_composite_sensitivity": composite_sensitivity,
             "stress_decision_threshold": stress_threshold,
             "stress_decision_threshold_raw": stress_threshold_raw,
             "regime_cutoffs_rv_300s_train_terciles": regime_cutoffs,

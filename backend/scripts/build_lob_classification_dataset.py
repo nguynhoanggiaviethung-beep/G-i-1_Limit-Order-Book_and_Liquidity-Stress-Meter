@@ -54,7 +54,7 @@ def main() -> int:
             print(f"{symbol} {date}: {len(features):,} rows, {valid_count:,} valid -> {output.relative_to(REPOSITORY_ROOT)}")
             found += 1
     if not found:
-        print(f"No normalized replay partitions found under {store.root}. Add approved CryptoHFTData book_1s.parquet files first.")
+        print(f"No normalized replay partitions found under {store.root}. Replay a captured or approved historical L2 event stream first.")
         return 2
     return 0
 
