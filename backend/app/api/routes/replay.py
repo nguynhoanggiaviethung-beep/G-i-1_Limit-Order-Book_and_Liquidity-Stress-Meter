@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -36,38 +37,44 @@ def get_data_status(request: Request) -> dict[str, Any]:
 def get_replay_at(
     request: Request,
     symbol: str,
-    timestamp_utc: str = Query(...),
+    timestamp_utc: datetime = Query(...),
     depth: int = Query(20, ge=1, le=20),
 ) -> dict[str, Any]:
-    return _service(request).at(_symbol(symbol), timestamp_utc, depth)
+    return _service(request).at(_symbol(symbol), timestamp_utc.isoformat(), depth)
 
 
 @router.get("/replay/{symbol}")
 def get_replay(
     request: Request,
     symbol: str,
-    start: str | None = Query(None),
-    end: str | None = Query(None),
+    start: datetime | None = Query(None),
+    end: datetime | None = Query(None),
     depth: int = Query(20, ge=1, le=20),
     limit: int = Query(1000, ge=1, le=5000),
 ) -> dict[str, Any]:
-    return _service(request).replay(_symbol(symbol), start=start, end=end, depth=depth, limit=limit)
+    return _service(request).replay(
+        _symbol(symbol),
+        start=start.isoformat() if start is not None else None,
+        end=end.isoformat() if end is not None else None,
+        depth=depth,
+        limit=limit,
+    )
 
 
 @router.get("/meter/{symbol}")
 def get_meter(
     request: Request,
     symbol: str,
-    timestamp_utc: str | None = Query(None),
+    timestamp_utc: datetime | None = Query(None),
     horizon_seconds: int = Query(5, ge=1, le=60),
 ) -> dict[str, Any]:
-    return _service(request).meter(_symbol(symbol), timestamp_utc, horizon_seconds)
+    return _service(request).meter(_symbol(symbol), timestamp_utc.isoformat() if timestamp_utc is not None else None, horizon_seconds)
 
 
 class PredictRequest(BaseModel):
     symbol: str
     horizon_seconds: int = Field(5, ge=1, le=60)
-    timestamp_utc: str | None = None
+    timestamp_utc: datetime | None = None
     features: dict[str, Any]
     quality: dict[str, Any] = Field(default_factory=dict)
 
@@ -77,7 +84,7 @@ def predict(request: Request, payload: PredictRequest) -> dict[str, Any]:
     symbol = _symbol(payload.symbol)
     return _service(request).predict_features(
         symbol,
-        payload.timestamp_utc,
+        payload.timestamp_utc.isoformat() if payload.timestamp_utc is not None else None,
         payload.horizon_seconds,
         payload.features,
         payload.quality or {"book_valid": True},

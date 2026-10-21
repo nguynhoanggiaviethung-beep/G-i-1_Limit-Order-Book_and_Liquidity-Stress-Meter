@@ -16,22 +16,35 @@ from app.data.grid_store import GridStore
 from app.features.classification_features import build_classification_features
 
 
+def build_partition_features(raw_frame: pd.DataFrame, previous_tail: pd.DataFrame, date: str, symbol: str, settings, impact_override: float | None = None):
+    """Build daily output with enough preceding rows to warm every rolling feature."""
+    warmup_rows = settings.lob_feature_lookback_seconds + 1
+    frame = pd.concat([previous_tail, raw_frame], ignore_index=True) if not previous_tail.empty else raw_frame.copy()
+    impact_notional = impact_override if impact_override is not None else settings.impact_notional_for(symbol)
+    features = build_classification_features(frame, impact_notional, settings.tick_size_for(symbol))
+    if date != "unknown":
+        day_start = pd.Timestamp(f"{date}T00:00:00Z")
+        day_end = day_start + pd.DateOffset(days=1)
+        features = features.loc[(features["timestamp_utc"] >= day_start) & (features["timestamp_utc"] < day_end)].reset_index(drop=True)
+    return features, frame.tail(warmup_rows).copy()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--symbol", choices=("BTCUSDT", "ETHUSDT"), help="Build only one configured symbol")
     parser.add_argument("--impact-notional-usdt", type=float)
     args = parser.parse_args()
     settings = load_settings()
-    impact_notional = args.impact_notional_usdt if args.impact_notional_usdt is not None else settings.lob_stress_impact_notional_usdt
     store = GridStore()
     output_root = store.root.parent / "features"
     symbols = (args.symbol,) if args.symbol else settings.symbols
     found = 0
     for symbol in symbols:
+        previous_tail = pd.DataFrame()
         for source in store._files(symbol):
-            frame = pd.read_parquet(source)
-            features = build_classification_features(frame, impact_notional)
+            raw_frame = pd.read_parquet(source)
             date = store._date_from_path(source) or "unknown"
+            features, previous_tail = build_partition_features(raw_frame, previous_tail, date, symbol, settings, args.impact_notional_usdt)
             output = output_root / f"symbol={symbol}" / f"date={date}" / "features_1s.parquet"
             output.parent.mkdir(parents=True, exist_ok=True)
             temporary = output.with_suffix(".parquet.tmp")

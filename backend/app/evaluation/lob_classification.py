@@ -15,6 +15,94 @@ from sklearn.metrics import (
     precision_recall_fscore_support,
     average_precision_score,
 )
+from scipy.stats import binomtest, norm
+
+
+def paired_classification_tests(
+    y_true,
+    prediction,
+    baseline_prediction,
+    probabilities,
+    baseline_probabilities,
+    *,
+    stress: bool = False,
+    horizon_seconds: int = 1,
+    baseline_name: str = "persistence",
+) -> dict[str, Any]:
+    """Compare two paired forecasts with exact McNemar and HAC DM tests.
+
+    DM uses Brier loss and a Bartlett/Newey-West long-run variance with
+    ``horizon_seconds - 1`` lags to account for overlapping forecast targets.
+    A positive mean difference means ``prediction`` has larger Brier loss.
+    """
+    truth = np.asarray(y_true)
+    predicted = np.asarray(prediction)
+    baseline = np.asarray(baseline_prediction)
+    p = np.asarray(probabilities, dtype=float)
+    p0 = np.asarray(baseline_probabilities, dtype=float)
+    if not (len(truth) == len(predicted) == len(baseline) == len(p) == len(p0)):
+        raise ValueError("paired predictions and labels must have equal lengths")
+    if not len(truth):
+        return {"n": 0, "mcnemar": None, "diebold_mariano_brier": None}
+
+    correct = predicted == truth
+    baseline_correct = baseline == truth
+    model_only = int(np.sum(correct & ~baseline_correct))
+    baseline_only = int(np.sum(~correct & baseline_correct))
+    discordant = model_only + baseline_only
+    mcnemar_p = float(binomtest(model_only, discordant, p=0.5, alternative="two-sided").pvalue) if discordant else 1.0
+    mcnemar_stat = float((abs(model_only - baseline_only) - 1) ** 2 / discordant) if discordant else 0.0
+
+    if stress:
+        actual = (truth == 1).astype(float)
+        model_positive = p[:, 1] if p.ndim == 2 and p.shape[1] > 1 else p.reshape(-1)
+        baseline_positive = p0[:, 1] if p0.ndim == 2 and p0.shape[1] > 1 else p0.reshape(-1)
+        model_loss = (model_positive - actual) ** 2
+        baseline_loss = (baseline_positive - actual) ** 2
+    else:
+        labels = tuple(sorted(set(truth.tolist()) | set(predicted.tolist()) | set(baseline.tolist())))
+        positions = {label: index for index, label in enumerate(labels)}
+        one_hot = np.zeros((len(truth), len(labels)), dtype=float)
+        for row, label in enumerate(truth):
+            one_hot[row, positions[label]] = 1.0
+        if p.ndim != 2 or p0.ndim != 2 or p.shape[1] != len(labels) or p0.shape[1] != len(labels):
+            raise ValueError("multiclass probabilities must have one column per sorted class")
+        model_loss = np.sum((p - one_hot) ** 2, axis=1)
+        baseline_loss = np.sum((p0 - one_hot) ** 2, axis=1)
+
+    difference = model_loss - baseline_loss
+    n = len(difference)
+    mean_difference = float(np.mean(difference))
+    centered = difference - mean_difference
+    max_lag = min(max(int(horizon_seconds) - 1, 0), n - 1)
+    long_run_variance = float(np.dot(centered, centered) / n)
+    for lag in range(1, max_lag + 1):
+        weight = 1.0 - lag / (max_lag + 1.0)
+        autocovariance = float(np.dot(centered[lag:], centered[:-lag]) / n)
+        long_run_variance += 2.0 * weight * autocovariance
+    long_run_variance = max(long_run_variance, 0.0)
+    if long_run_variance > 0:
+        dm_stat = float(mean_difference / np.sqrt(long_run_variance / n))
+        dm_p = float(2 * norm.sf(abs(dm_stat)))
+    else:
+        dm_stat = None
+        dm_p = None
+    return {
+        "n": int(n),
+        "baseline": baseline_name,
+        "mcnemar": {
+            "model_only_correct": model_only,
+            "baseline_only_correct": baseline_only,
+            "continuity_corrected_chi2": mcnemar_stat,
+            "p_value_exact_two_sided": mcnemar_p,
+        },
+        "diebold_mariano_brier": {
+            "mean_loss_difference_model_minus_baseline": mean_difference,
+            "hac_lags": max_lag,
+            "statistic": dm_stat,
+            "p_value_two_sided_normal": dm_p,
+        },
+    }
 
 
 def classification_metrics(y_true, y_pred, probabilities=None, labels=None, stress: bool = False) -> dict[str, Any]:

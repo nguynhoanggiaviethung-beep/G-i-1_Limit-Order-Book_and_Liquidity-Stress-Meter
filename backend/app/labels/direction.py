@@ -13,7 +13,7 @@ def _valid_future_window(frame: pd.DataFrame, origin: int, horizon_seconds: int)
     times = pd.to_datetime(frame["timestamp_utc"], utc=True, errors="coerce").iloc[origin : target + 1]
     if times.isna().any() or len(times) != horizon_seconds + 1:
         return None
-    expected = pd.Timedelta(seconds=1).value
+    expected = 1_000_000_000
     if not np.all(np.diff(times.astype("int64").to_numpy()) == expected):
         return None
     if "book_valid" in frame and not frame["book_valid"].iloc[origin : target + 1].fillna(False).astype(bool).all():
@@ -61,7 +61,7 @@ def valid_future_origins(frame: pd.DataFrame, horizon_seconds: int) -> np.ndarra
         valid &= frame["book_valid"].fillna(False).astype(bool).to_numpy()
     valid &= np.isfinite(pd.to_numeric(frame["mid_price"], errors="coerce").to_numpy(dtype=float))
     steps = np.zeros(size, dtype=np.int8)
-    steps[1:] = ((np.diff(times) == pd.Timedelta(seconds=1).value) & valid[1:] & valid[:-1]).astype(np.int8)
+    steps[1:] = ((np.diff(times) == 1_000_000_000) & valid[1:] & valid[:-1]).astype(np.int8)
     prefix = np.r_[0, np.cumsum(steps, dtype=np.int64)]
     origins = np.arange(size - horizon_seconds)
     ends = origins + horizon_seconds

@@ -35,7 +35,11 @@ def _impact(prices: np.ndarray, quantities: np.ndarray, mid: np.ndarray, notiona
     return impact
 
 
-def build_classification_features(grid: pd.DataFrame, impact_notional_usdt: float = 1000.0) -> pd.DataFrame:
+def build_classification_features(
+    grid: pd.DataFrame,
+    impact_notional_usdt: float = 100000.0,
+    tick_size: float | None = None,
+) -> pd.DataFrame:
     """Return the input grid with derived LOB, OFI/trade, and rolling RV features."""
     if grid.empty:
         return grid.copy()
@@ -75,6 +79,17 @@ def build_classification_features(grid: pd.DataFrame, impact_notional_usdt: floa
     frame["mid_price"] = mid
     frame["absolute_spread"] = spread
     frame["relative_spread_bps"] = np.divide(spread, mid, out=np.full_like(mid, np.nan), where=mid > 0) * 10000.0
+    configured_tick = pd.to_numeric(frame.get("tick_size"), errors="coerce") if "tick_size" in frame else None
+    if configured_tick is not None:
+        tick_values = configured_tick.to_numpy(dtype=float)
+        if tick_size is not None:
+            tick_values = np.where(np.isfinite(tick_values) & (tick_values > 0), tick_values, tick_size)
+    elif tick_size is not None:
+        tick_values = np.full(len(frame), float(tick_size), dtype=float)
+    else:
+        tick_values = np.full(len(frame), np.nan, dtype=float)
+    frame["tick_size"] = tick_values
+    frame["spread_ticks"] = np.divide(spread, tick_values, out=np.full_like(spread, np.nan), where=tick_values > 0)
     frame["microprice"] = microprice
     frame["microprice_minus_mid_bps"] = np.divide(microprice - mid, mid, out=np.full_like(mid, np.nan), where=mid > 0) * 10000.0
     for depth in (1, 5, 10, 20):
@@ -84,19 +99,27 @@ def build_classification_features(grid: pd.DataFrame, impact_notional_usdt: floa
         frame[f"bid_depth_qty_{depth}"] = bid_depth
         frame[f"ask_depth_qty_{depth}"] = ask_depth
         frame[f"depth_qty_{depth}"] = total
+        frame[f"bid_depth_notional_{depth}"] = (bp[:, :depth] * bq[:, :depth]).sum(axis=1)
+        frame[f"ask_depth_notional_{depth}"] = (ap[:, :depth] * aq[:, :depth]).sum(axis=1)
+        frame[f"depth_notional_{depth}"] = frame[f"bid_depth_notional_{depth}"] + frame[f"ask_depth_notional_{depth}"]
         frame[f"obi_qty_{depth}"] = np.divide(bid_depth - ask_depth, total, out=np.full_like(total, np.nan), where=total > 0)
 
     frame["impact_buy_bps"] = _impact(ap, aq, mid, impact_notional_usdt, buy=True)
     frame["impact_sell_bps"] = _impact(bp, bq, mid, impact_notional_usdt, buy=False)
-    frame["price_impact_bps"] = frame[["impact_buy_bps", "impact_sell_bps"]].max(axis=1, skipna=True)
+    both_sides_filled = frame["impact_buy_bps"].notna() & frame["impact_sell_bps"].notna()
+    frame["price_impact_bps"] = np.where(
+        both_sides_filled,
+        frame[["impact_buy_bps", "impact_sell_bps"]].max(axis=1),
+        np.nan,
+    )
 
     times = frame["timestamp_utc"].astype("int64").to_numpy()
-    one_second = pd.Timedelta(seconds=1).value
+    one_second = 1_000_000_000
     continuous = np.r_[False, np.diff(times) == one_second]
     valid = frame["book_valid"].to_numpy(dtype=bool) & np.isfinite(mid)
     starts = ~(continuous & valid & np.r_[False, valid[:-1]])
     segments = pd.Series(np.cumsum(starts), index=frame.index)
-    returns = pd.Series(np.log(mid).diff(), index=frame.index).where(valid)
+    returns = pd.Series(np.log(mid), index=frame.index).diff().where(valid)
     returns = returns.mask(segments.groupby(segments).cumcount().eq(0))
     frame["mid_return_1s"] = returns
     squared = returns.pow(2)
@@ -126,5 +149,16 @@ def build_classification_features(grid: pd.DataFrame, impact_notional_usdt: floa
         for name in ("trade_imbalance_5s", "trade_imbalance_10s"):
             if name not in frame:
                 frame[name] = np.nan
+    for source, output in (
+        ("addition_intensity_1s", "addition_intensity"),
+        ("cancellation_intensity_1s", "cancellation_intensity"),
+    ):
+        if source in frame:
+            values = pd.to_numeric(frame[source], errors="coerce")
+            frame[source] = values
+            frame[f"{output}_5s"] = _window_sum(values, segments, 5)
+        else:
+            frame[source] = np.nan
+            frame[f"{output}_5s"] = np.nan
     return frame
 

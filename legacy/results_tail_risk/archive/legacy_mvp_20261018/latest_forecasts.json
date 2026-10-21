@@ -1,0 +1,98 @@
+{
+  "generated_at_utc": "2026-10-17T14:04:38.158021+00:00",
+  "source": "Binance Spot 5-minute candles",
+  "symbols": {
+    "BTCUSDT": {
+      "split_date": "2025-06-17T00:00:00+00:00",
+      "test_start": "2025-06-17T00:00:00+00:00",
+      "test_end": "2026-10-16T00:00:00+00:00",
+      "train_rows": 1947,
+      "test_rows": 487,
+      "origin_time": "2026-10-17T13:59:59.999000+00:00",
+      "target_time": "2026-10-18T00:00:00+00:00",
+      "feature_cutoff_utc": "13:55",
+      "cutoff_minute": 835,
+      "forecasts": {
+        "rolling_mean_22": {
+          "realized_variance": 1.7076769674687469,
+          "realized_volatility": 1.3067811475028046
+        },
+        "har_rv": {
+          "realized_variance": 6.877134877364516,
+          "realized_volatility": 2.622429193965876
+        },
+        "random_forest": {
+          "realized_variance": 4.958898356606847,
+          "realized_volatility": 2.226858405154411
+        },
+        "garch": {
+          "realized_variance": 5.222976155524968,
+          "realized_volatility": 2.2853831528925226,
+          "var_es": {
+            "0.95": {
+              "var_loss_percent": 3.107707185939283,
+              "expected_shortfall_loss_percent": 5.113279878843501
+            },
+            "0.99": {
+              "var_loss_percent": 5.992946058172413,
+              "expected_shortfall_loss_percent": 9.237188887983397
+            }
+          }
+        }
+      },
+      "garch_origin_time": "2026-10-16T00:00:00+00:00",
+      "garch_steps_ahead": 2,
+      "data_as_of_utc": "2026-10-17T13:59:59.999000+00:00",
+      "forecast_horizon_days": 1,
+      "target_definition": "next UTC day's realized variance from complete 5-minute returns",
+      "risk_unit": "loss-positive daily return percent",
+      "risk_method": "GARCH(1,1) conditional volatility with fitted Student-t innovations"
+    },
+    "ETHUSDT": {
+      "split_date": "2025-06-17T00:00:00+00:00",
+      "test_start": "2025-06-17T00:00:00+00:00",
+      "test_end": "2026-10-16T00:00:00+00:00",
+      "train_rows": 1947,
+      "test_rows": 487,
+      "origin_time": "2026-10-17T13:59:59.999000+00:00",
+      "target_time": "2026-10-18T00:00:00+00:00",
+      "feature_cutoff_utc": "13:55",
+      "cutoff_minute": 835,
+      "forecasts": {
+        "rolling_mean_22": {
+          "realized_variance": 2.994605111770122,
+          "realized_volatility": 1.7304927366996148
+        },
+        "har_rv": {
+          "realized_variance": 12.761553931712873,
+          "realized_volatility": 3.572331721958765
+        },
+        "random_forest": {
+          "realized_variance": 5.844586273516995,
+          "realized_volatility": 2.41755791523533
+        },
+        "garch": {
+          "realized_variance": 9.233278023571355,
+          "realized_volatility": 3.038630945602206,
+          "var_es": {
+            "0.95": {
+              "var_loss_percent": 4.275066021428229,
+              "expected_shortfall_loss_percent": 6.859808489697164
+            },
+            "0.99": {
+              "var_loss_percent": 8.04330660261059,
+              "expected_shortfall_loss_percent": 12.057880386532968
+            }
+          }
+        }
+      },
+      "garch_origin_time": "2026-10-16T00:00:00+00:00",
+      "garch_steps_ahead": 2,
+      "data_as_of_utc": "2026-10-17T13:59:59.999000+00:00",
+      "forecast_horizon_days": 1,
+      "target_definition": "next UTC day's realized variance from complete 5-minute returns",
+      "risk_unit": "loss-positive daily return percent",
+      "risk_method": "GARCH(1,1) conditional volatility with fitted Student-t innovations"
+    }
+  }
+}

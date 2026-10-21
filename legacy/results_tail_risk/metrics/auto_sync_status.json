@@ -1,0 +1,35 @@
+{
+  "enabled": true,
+  "status": "ok",
+  "interval_seconds": 300,
+  "grace_seconds": 10,
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT"
+  ],
+  "last_started_at_utc": "2026-10-20T12:25:10.002396+00:00",
+  "last_success_at_utc": "2026-10-20T12:27:08.235593+00:00",
+  "last_error": null,
+  "symbols_result": {
+    "BTCUSDT": {
+      "symbol": "BTCUSDT",
+      "rows": 819843,
+      "new_rows": 3,
+      "gaps": 21,
+      "raw_file": "D:\\G\u00f3i 1\\G-i-1_Limit-Order-Book_and_Liquidity-Stress-Meter\\data\\raw\\symbol=BTCUSDT\\interval=5m\\klines.parquet",
+      "processed_file": "D:\\G\u00f3i 1\\G-i-1_Limit-Order-Book_and_Liquidity-Stress-Meter\\data\\processed\\symbol=BTCUSDT\\interval=5m\\klines.parquet",
+      "latest_closed_candle_utc": "2026-10-20T12:20:00+00:00",
+      "feature_rows": 2850
+    },
+    "ETHUSDT": {
+      "symbol": "ETHUSDT",
+      "rows": 819843,
+      "new_rows": 3,
+      "gaps": 21,
+      "raw_file": "D:\\G\u00f3i 1\\G-i-1_Limit-Order-Book_and_Liquidity-Stress-Meter\\data\\raw\\symbol=ETHUSDT\\interval=5m\\klines.parquet",
+      "processed_file": "D:\\G\u00f3i 1\\G-i-1_Limit-Order-Book_and_Liquidity-Stress-Meter\\data\\processed\\symbol=ETHUSDT\\interval=5m\\klines.parquet",
+      "latest_closed_candle_utc": "2026-10-20T12:20:00+00:00",
+      "feature_rows": 2850
+    }
+  }
+}

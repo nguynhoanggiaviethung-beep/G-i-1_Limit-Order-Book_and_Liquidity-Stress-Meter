@@ -10,7 +10,7 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from app.core.config import REPOSITORY_ROOT
+from app.core.config import REPOSITORY_ROOT, load_settings
 from app.data.grid_store import GridStore
 from app.features.microstructure import compute_microstructure_features
 from app.models.lob_classifiers import LOB_CLASSIFICATION_FEATURES
@@ -24,8 +24,21 @@ def _number(value: Any) -> float | None:
     return result if np.isfinite(result) else None
 
 
-def _snapshot(row: dict[str, Any], depth: int) -> dict[str, Any]:
-    derived = compute_microstructure_features(row)
+def _utc_timestamp(value: str | pd.Timestamp) -> pd.Timestamp:
+    result = pd.Timestamp(value)
+    return result.tz_localize("UTC") if result.tzinfo is None else result.tz_convert("UTC")
+
+
+def _truthy(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes"}
+    return bool(value)
+
+
+def _snapshot(row: dict[str, Any], depth: int, impact_notional: float = 100000.0, tick_size: float | None = None) -> dict[str, Any]:
+    derived = compute_microstructure_features(row, impact_notional, tick_size)
     bids, asks = [], []
     for level in range(1, depth + 1):
         bp, bq = row.get(f"bid_price_{level}"), row.get(f"bid_qty_{level}")
@@ -38,23 +51,36 @@ def _snapshot(row: dict[str, Any], depth: int) -> dict[str, Any]:
         "schema": "replay_snapshot.v1",
         "symbol": row.get("symbol"),
         "timestamp_utc": row.get("timestamp_utc"),
-        "book_valid": bool(row.get("book_valid", True)),
+        "book_valid": _truthy(row.get("book_valid"), True),
         "bids": bids,
         "asks": asks,
         "features": {**row, **derived},
         "quality": {
-            "book_valid": bool(row.get("book_valid", True)),
-            "sequence_gap": bool(row.get("sequence_gap", False)),
+            "book_valid": _truthy(row.get("book_valid"), True),
+            "sequence_gap": _truthy(row.get("sequence_gap"), False),
             "seconds_since_gap": row.get("seconds_since_gap"),
         },
     }
 
 
 class ReplayService:
-    def __init__(self, store: GridStore | None = None, artifact_root: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        store: GridStore | None = None,
+        artifact_root: str | Path | None = None,
+        max_staleness_seconds: int | None = None,
+        max_missing_feature_fraction: float | None = None,
+        impact_notional_usdt: float | None = None,
+    ) -> None:
         self.store = store or GridStore()
         self.feature_store = GridStore(self.store.root.parent / "features")
         self.artifact_root = Path(artifact_root) if artifact_root else REPOSITORY_ROOT / "backend" / "artifacts" / "meter"
+        settings = load_settings()
+        self.max_staleness_seconds = settings.lob_max_staleness_seconds if max_staleness_seconds is None else max_staleness_seconds
+        self.max_missing_feature_fraction = settings.lob_max_missing_feature_fraction if max_missing_feature_fraction is None else max_missing_feature_fraction
+        self.impact_notionals = settings.lob_stress_impact_notional_by_symbol or {}
+        self.tick_sizes = settings.lob_tick_size_by_symbol or {}
+        self.default_impact_notional = settings.lob_stress_impact_notional_usdt if impact_notional_usdt is None else impact_notional_usdt
         self._bundles: dict[tuple[str, int], dict[str, Any] | None] = {}
 
     def data_status(self, symbols: tuple[str, ...]) -> dict[str, Any]:
@@ -68,16 +94,38 @@ class ReplayService:
             "status": "ready" if not frame.empty else "unavailable",
             "reason": None if not frame.empty else f"No valid replay rows found for {symbol}",
             "count": int(len(frame)),
-            "snapshots": [_snapshot(self.store.json_row(row), depth) for _, row in frame.iterrows()],
+            "snapshots": [
+                _snapshot(
+                    self.store.json_row(row), depth,
+                    float(self.impact_notionals.get(symbol.upper(), self.default_impact_notional)),
+                    self.tick_sizes.get(symbol.upper()),
+                )
+                for _, row in frame.iterrows()
+            ],
         }
 
     def at(self, symbol: str, timestamp: str, depth: int = 20) -> dict[str, Any]:
-        requested = pd.Timestamp(timestamp)
+        requested = _utc_timestamp(timestamp)
         frame = self.store.read(symbol, start=requested.normalize().isoformat(), end=timestamp, limit=10000)
         if frame.empty:
-            return {"schema": "replay_snapshot.v1", "symbol": symbol, "status": "unavailable", "reason": "No valid book at or before the requested time", "snapshot": None}
+            return {"schema": "replay_snapshot.v1", "symbol": symbol, "status": "unavailable", "reason": "No valid book at or before the requested time", "snapshot_age_seconds": None, "snapshot": None}
         row = frame.iloc[-1]
-        return {"schema": "replay_snapshot.v1", "symbol": symbol, "status": "ready", "snapshot": _snapshot(self.store.json_row(row), depth)}
+        age_seconds = max(0.0, (requested - pd.Timestamp(row["timestamp_utc"])).total_seconds())
+        if age_seconds > self.max_staleness_seconds:
+            return {
+                "schema": "replay_snapshot.v1", "symbol": symbol, "status": "unavailable",
+                "reason": f"Latest valid book is {age_seconds:.3f}s old (limit {self.max_staleness_seconds}s)",
+                "snapshot_age_seconds": age_seconds, "snapshot": None,
+            }
+        return {
+            "schema": "replay_snapshot.v1", "symbol": symbol, "status": "ready",
+            "snapshot_age_seconds": age_seconds,
+            "snapshot": _snapshot(
+                self.store.json_row(row), depth,
+                float(self.impact_notionals.get(symbol.upper(), self.default_impact_notional)),
+                self.tick_sizes.get(symbol.upper()),
+            ),
+        }
 
     def _bundle(self, symbol: str, horizon_seconds: int) -> dict[str, Any] | None:
         key = symbol.upper(), int(horizon_seconds)
@@ -112,6 +160,16 @@ class ReplayService:
 
     def predict_features(self, symbol: str, timestamp: str | None, horizon_seconds: int, feature_values: dict[str, Any], quality: dict[str, Any] | None = None) -> dict[str, Any]:
         bundle = self._bundle(symbol, horizon_seconds)
+        columns = list((bundle or {}).get("feature_columns") or LOB_CLASSIFICATION_FEATURES)
+        values = {column: _number(feature_values.get(column)) for column in columns}
+        missing_features = [column for column, value in values.items() if value is None]
+        missing_fraction = len(missing_features) / len(columns) if columns else 1.0
+        quality_details = {
+            **(quality or {"book_valid": True}),
+            "missing_features": missing_features,
+            "missing_feature_count": len(missing_features),
+            "missing_feature_fraction": missing_fraction,
+        }
         base = {
             "schema": "liquidity_meter.v1",
             "symbol": symbol.upper(),
@@ -120,7 +178,7 @@ class ReplayService:
             "spread": str(feature_values.get("absolute_spread")) if feature_values.get("absolute_spread") is not None else None,
             "depth_imbalance": {f"L{depth}": _number(feature_values.get(f"obi_qty_{depth}")) for depth in (1, 5, 10, 20)},
             "ofi_5s": _number(feature_values.get("ofi_5s")),
-            "quality": quality or {"book_valid": True},
+            "quality": quality_details,
             "p_up": None,
             "p_flat": None,
             "p_down": None,
@@ -129,11 +187,15 @@ class ReplayService:
         }
         if bundle is None:
             return {**base, "status": "unavailable", "reason": "No trained artifact is available for this symbol and horizon"}
-        columns = list(bundle.get("feature_columns") or LOB_CLASSIFICATION_FEATURES)
+        if missing_fraction > self.max_missing_feature_fraction:
+            return {
+                **base,
+                "status": "unavailable",
+                "reason": f"{len(missing_features)} of {len(columns)} model features are missing; maximum allowed fraction is {self.max_missing_feature_fraction:.0%}",
+            }
         direction_model, stress_model = bundle.get("direction_model"), bundle.get("stress_model")
         if direction_model is None or stress_model is None:
             return {**base, "status": "unavailable", "reason": "The model artifact is missing a direction or stress classifier"}
-        values = {column: _number(feature_values.get(column)) for column in columns}
         direction = self._direction_probabilities(direction_model, values, columns)
         stress_matrix = pd.DataFrame([[values.get(column, np.nan) for column in columns]], columns=columns)
         if not hasattr(stress_model, "predict_proba"):
@@ -180,21 +242,30 @@ class ReplayService:
             if frame.empty:
                 frame = self.store.read(symbol, limit=1)
         else:
-            requested = pd.Timestamp(timestamp)
+            requested = _utc_timestamp(timestamp)
             frame = self.feature_store.read(symbol, start=requested.normalize().isoformat(), end=timestamp, limit=10000)
             if frame.empty:
                 frame = self.store.read(symbol, start=requested.normalize().isoformat(), end=timestamp, limit=10000)
         if frame.empty:
             return self.predict_features(symbol, timestamp, horizon_seconds, {}, {"book_valid": False, "reason": "No replay data is available"})
         row = self.store.json_row(frame.iloc[-1])
-        derived = compute_microstructure_features(row)
-        features = {**row, **derived}
-        for name, value in row.items():
-            if name not in features:
-                features[name] = value
+        snapshot_timestamp = pd.Timestamp(row["timestamp_utc"])
+        snapshot_age = max(0.0, (_utc_timestamp(timestamp) - snapshot_timestamp).total_seconds()) if timestamp is not None else 0.0
+        if timestamp is not None and snapshot_age > self.max_staleness_seconds:
+            return {
+                "schema": "liquidity_meter.v1", "symbol": symbol.upper(), "timestamp_utc": timestamp,
+                "horizon_seconds": int(horizon_seconds), "status": "unavailable",
+                "reason": f"Latest valid book is {snapshot_age:.3f}s old (limit {self.max_staleness_seconds}s)",
+                "quality": {"book_valid": False, "snapshot_age_seconds": snapshot_age},
+                "p_up": None, "p_flat": None, "p_down": None, "p_stress": None,
+                "model_version": None,
+            }
+        impact_notional = float(self.impact_notionals.get(symbol.upper(), self.default_impact_notional))
+        derived = compute_microstructure_features(row, impact_notional, self.tick_sizes.get(symbol.upper()))
+        features = {**derived, **row}
         return self.predict_features(
             symbol, row.get("timestamp_utc"), horizon_seconds, features,
-            {"book_valid": bool(row.get("book_valid", True)), "seconds_since_gap": row.get("seconds_since_gap")},
+            {"book_valid": _truthy(row.get("book_valid"), True), "seconds_since_gap": row.get("seconds_since_gap"), "snapshot_age_seconds": snapshot_age},
         )
 
     def models(self, symbols: tuple[str, ...], horizons: tuple[int, ...]) -> dict[str, Any]:

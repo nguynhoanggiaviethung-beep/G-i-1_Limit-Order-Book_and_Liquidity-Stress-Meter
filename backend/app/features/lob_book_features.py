@@ -17,7 +17,7 @@ def _depth(levels: Iterable[tuple[Decimal, Decimal]]) -> tuple[float, float]:
     return float(quantity), float(notional)
 
 
-def compute_book_features(book: LocalOrderBook) -> dict[str, float | int]:
+def compute_book_features(book: LocalOrderBook, tick_size: float | None = None) -> dict[str, float | int]:
     if not book.valid:
         raise ValueError("Cannot calculate features from an invalid local book")
     bids, asks = book.best_bid, book.best_ask
@@ -38,6 +38,7 @@ def compute_book_features(book: LocalOrderBook) -> dict[str, float | int]:
         "mid_price": float(mid),
         "absolute_spread": float(spread),
         "relative_spread_bps": float(spread / mid * Decimal(10000)),
+        "spread_ticks": float(spread / Decimal(str(tick_size))) if tick_size and tick_size > 0 else float("nan"),
         "microprice": float(microprice),
         "microprice_minus_mid_bps": float((microprice - mid) / mid * Decimal(10000)),
         "bid_level_count": len(book.bids),
@@ -56,11 +57,11 @@ def compute_book_features(book: LocalOrderBook) -> dict[str, float | int]:
         result[f"obi_notional_{count}"] = (
             (bid_notional_n - ask_notional_n) / notional_total if notional_total else 0.0
         )
-        result[f"bid_depth_concentration_{count}"] = (
+        result[f"bid_top_level_share_{count}"] = (
             float(book.top_levels("bid", min(5, count))[0][1] / Decimal(str(bid_qty_n)))
             if bid_qty_n else 0.0
         )
-        result[f"ask_depth_concentration_{count}"] = (
+        result[f"ask_top_level_share_{count}"] = (
             float(book.top_levels("ask", min(5, count))[0][1] / Decimal(str(ask_qty_n)))
             if ask_qty_n else 0.0
         )

@@ -10,10 +10,11 @@ Let `b1` and `a1` be the best bid and ask, with quantities `qb1` and `qa1`:
 mid_t = (a1_t + b1_t) / 2
 spread_t = a1_t - b1_t
 relative_spread_bps_t = 10,000 * spread_t / mid_t
+spread_ticks_t = spread_t / configured_tick_size
 microprice_t = (a1_t * qb1_t + b1_t * qa1_t) / (qb1_t + qa1_t)
 ```
 
-If the top-level quantity sum is zero, use mid-price for microprice and set the quality flag. For `L` levels:
+If the top-level quantity sum is zero, use mid-price for microprice and set the quality flag. Tick size comes from the per-symbol configuration. For `L` levels:
 
 ```text
 OBI_L(t) = (sum_bid_qty_L - sum_ask_qty_L) / (sum_bid_qty_L + sum_ask_qty_L)
@@ -34,9 +35,11 @@ e_n = 1(P^b_n >= P^b_(n-1)) q^b_n
 
 Sum `e_n` over trailing 1, 5, and 10 second windows. OFI must be accumulated during event replay; it cannot be reconstructed correctly from one snapshot per second. Trade imbalance uses aggressive buy and sell volumes in `(t-w, t]`; Binance buyer-maker `false` denotes an aggressive buy.
 
+Replay also reports displayed quantity additions and depletions by second. Public depth updates cannot reliably distinguish a cancellation from an execution at a price level, so depletion is a proxy. Trade count and last trade price/time are retained separately.
+
 ## Price impact and volatility features
 
-For a fixed USDT notional, sweep asks to estimate buy VWAP and bids to estimate sell VWAP. Express adverse movement from the mid-price in basis points. If the visible 20 levels cannot fill the notional, record the impact as missing and flag insufficient displayed depth.
+For a fixed USDT notional, sweep asks to estimate buy VWAP and bids to estimate sell VWAP. Defaults are 250,000 USDT for BTCUSDT and 100,000 USDT for ETHUSDT. Express adverse movement from the mid-price in basis points. If either side of the visible 20 levels cannot fill the notional, record the composite impact as missing; never substitute the one-sided value.
 
 For one-second mid-price log returns `r_t`, trailing realized variance is:
 
@@ -59,21 +62,23 @@ down if change_(t,h) < -delta
 
 Estimate `delta` from the chosen quantile of absolute future mid-price changes in the first training fold for each symbol and horizon. Freeze it before model comparison. A label is missing if any state from `t` through `t+h` is absent or invalid.
 
-Fit stress thresholds from training rows only. At `t+h`, stress is one if at least one is true:
+Fit stress thresholds from valid training rows only. To avoid the four-way OR producing too many positive labels, the configured starting cutoffs use Q97.5 for spread ticks, impact, and RV, and Q2.5 for top-10 notional depth. At `t+h`, stress is one if at least one strict condition is true:
 
 ```text
-relative spread >= train Q95
-fixed-notional price impact >= train Q95
-top-10 total depth <= train Q05
-trailing 60-second RV >= train Q95
+spread ticks > train Q97.5
+fixed-notional price impact > train Q97.5
+top-10 notional depth < train Q2.5
+trailing 60-second RV > train Q97.5
 ```
 
-The source brief's spread-only `spread > Q95` label is evaluated as sensitivity. Check positive prevalence before freezing labels; BTC spot spread can be pinned to one tick, making a strict-greater-than threshold uninformative.
+The final development forward-label prevalence must fall in the configured 2–10% range or final-test scoring stops. Results also report positive prevalence by month. The source brief's spread-only `spread_ticks > Q95` label is evaluated as sensitivity and is marked degenerate when the train labels contain one class. BTC spot spread can be pinned to one tick, making that sensitivity uninformative.
 
 ## Walk-forward, calibration, and reporting
 
 Use expanding chronological month folds. Purge training origins whose target window overlaps validation; then apply an embargo at least as long as the maximum of the target horizon, longest feature window, and deep sequence. Fit the flat threshold, stress quantiles, imputer, scaler, and calibration map only on training/validation data available at that fold.
 
-Compare direction models against a one-second persistence baseline and a class-frequency baseline; select models by validation macro F1 and MCC. Report balanced accuracy and per-class precision/recall. For probabilities, report Brier score and calibration curves. Compare stress models against current-state persistence; select stress models with PR-AUC and MCC, and report thresholded precision/recall and calibration. Keep December 2025 untouched until model choice is final, and score it once.
+Compare direction models against a one-second persistence baseline and a class-frequency baseline; select models by validation macro F1 and MCC. Report balanced accuracy and per-class precision/recall. For probabilities, report Brier score and calibration curves. Compare stress models against current-state persistence; select stress models with PR-AUC and MCC, and report thresholded precision/recall and calibration. Include exact McNemar tests on paired correctness and Newey-West Diebold–Mariano tests on paired Brier losses with `h-1` lags for overlapping targets. Report δ quantile sensitivity around the frozen choice and OBI depth sensitivity at L=1, 5, 10, and 20 for h=1, 5, and 10. Keep December 2025 untouched until model choice is final, and score it once.
+
+DeepLOB is a separate optional PyTorch evaluation. It takes 100 contiguous seconds by 40 channels (bid/ask prices and quantities over ten levels), applies a convolution over the side/level structure, then an LSTM over time. Windows crossing a missing second are discarded. Compare it with Logistic Regression and persistence on the same evenly spaced sample of up to 10,000 test origins; report sampled and available row counts, parameter count, and inference latency.
 
 Report results by symbol, horizon, month, and three volatility regimes based on trailing RV terciles. Include class distribution, feature summaries, confusion matrices, calibration, latency, model size, and actual data coverage. The API does not calculate replacement probabilities when a trained artifact is missing.

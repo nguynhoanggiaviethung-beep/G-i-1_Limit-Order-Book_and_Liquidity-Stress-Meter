@@ -32,9 +32,18 @@ lob:
   primary_horizon_seconds: 5
   depth_levels: 20
   direction_delta_quantile: 0.5
-  stress_quantile: 0.95
-  stress_depth_quantile: 0.05
-  stress_impact_notional_usdt: 1000
+  stress_quantile: 0.975
+  stress_depth_quantile: 0.025
+  stress_min_positive_rate: 0.02
+  stress_max_positive_rate: 0.10
+  stress_impact_notional_by_symbol:
+    BTCUSDT: 250000
+    ETHUSDT: 100000
+  tick_size_by_symbol:
+    BTCUSDT: 0.01
+    ETHUSDT: 0.01
+  max_missing_feature_fraction: 0.10
+  max_staleness_seconds: 2
   first_validation_month: "2025-08"
   development_end_utc: "2025-11-30T23:59:59Z"
   untouched_test_start_utc: "2025-12-01T00:00:00Z"

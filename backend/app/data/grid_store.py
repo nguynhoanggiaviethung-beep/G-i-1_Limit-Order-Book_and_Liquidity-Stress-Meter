@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import json
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,20 @@ class GridStore:
         self.root = Path(configured).expanduser() if configured else DEFAULT_GRID_ROOT
         if not self.root.is_absolute():
             self.root = REPOSITORY_ROOT / self.root
+        self._frame_cache: OrderedDict[Path, tuple[int, int, pd.DataFrame]] = OrderedDict()
+
+    def _read_partition(self, path: Path) -> pd.DataFrame:
+        stat = path.stat()
+        cached = self._frame_cache.get(path)
+        if cached and cached[:2] == (stat.st_mtime_ns, stat.st_size):
+            self._frame_cache.move_to_end(path)
+            return cached[2].copy()
+        frame = pd.read_parquet(path)
+        self._frame_cache[path] = (stat.st_mtime_ns, stat.st_size, frame)
+        self._frame_cache.move_to_end(path)
+        while len(self._frame_cache) > 3:
+            self._frame_cache.popitem(last=False)
+        return frame.copy()
 
     def _files(self, symbol: str) -> list[Path]:
         symbol = symbol.upper()
@@ -70,6 +85,7 @@ class GridStore:
                 "expected_seconds": self._sum_optional(partitions, "expected_seconds"),
                 "dropped_seconds": self._sum_optional(partitions, "dropped_seconds"),
                 "sequence_gap_count": self._sum_optional(partitions, "sequence_gap_count"),
+                "snapshot_bootstraps": self._sum_optional(partitions, "snapshot_bootstraps"),
                 "snapshot_recoveries": self._sum_optional(partitions, "snapshot_recoveries"),
                 "qa_available": bool(partitions) and all(item.get("qa_available", False) for item in partitions),
                 "coverage": self._coverage(partitions),
@@ -120,12 +136,13 @@ class GridStore:
                         "expected_seconds": payload.get("expected_seconds"),
                         "dropped_seconds": payload.get("dropped_seconds"),
                         "sequence_gap_count": payload.get("sequence_gap_count"),
+                        "snapshot_bootstraps": payload.get("snapshot_bootstraps"),
                         "snapshot_recoveries": payload.get("snapshot_recoveries"),
                         "coverage": payload.get("coverage"),
                     }
                 except (OSError, json.JSONDecodeError, TypeError):
                     break
-        return {"qa_available": False, "valid_seconds": None, "expected_seconds": None, "dropped_seconds": None, "sequence_gap_count": None, "snapshot_recoveries": None, "coverage": None}
+        return {"qa_available": False, "valid_seconds": None, "expected_seconds": None, "dropped_seconds": None, "sequence_gap_count": None, "snapshot_bootstraps": None, "snapshot_recoveries": None, "coverage": None}
 
     def read(
         self,
@@ -145,7 +162,7 @@ class GridStore:
             return pd.DataFrame()
         if start_ts is None and end_ts is None:
             files = files[-1:]
-        frames = [pd.read_parquet(path) for path in files]
+        frames = [self._read_partition(path) for path in files]
         frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
         if frame.empty:
             return frame

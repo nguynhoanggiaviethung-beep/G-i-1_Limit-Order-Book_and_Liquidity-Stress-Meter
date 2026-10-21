@@ -42,6 +42,8 @@ class LocalOrderBook:
     event_time_ms: int | None = None
     transaction_time_ms: int | None = None
     received_at_utc: str | None = None
+    _bid_prices_sorted: list[Decimal] | None = field(default=None, init=False, repr=False)
+    _ask_prices_sorted: list[Decimal] | None = field(default=None, init=False, repr=False)
 
     @classmethod
     def from_snapshot(cls, symbol: str, snapshot: dict[str, Any]) -> "LocalOrderBook":
@@ -73,15 +75,13 @@ class LocalOrderBook:
     def best_bid(self) -> tuple[Decimal, Decimal]:
         if not self.valid or not self.bids:
             raise InvalidBook(self.invalid_reason or "book_invalid")
-        price = max(self.bids)
-        return price, self.bids[price]
+        return self.top_levels("bid", 1)[0]
 
     @property
     def best_ask(self) -> tuple[Decimal, Decimal]:
         if not self.valid or not self.asks:
             raise InvalidBook(self.invalid_reason or "book_invalid")
-        price = min(self.asks)
-        return price, self.asks[price]
+        return self.top_levels("ask", 1)[0]
 
     def apply_update(self, event: dict[str, Any]) -> bool:
         """Apply one diff-depth event; return False for an already-applied event."""
@@ -97,8 +97,10 @@ class LocalOrderBook:
                 f"{self.symbol}: expected update {missing_from}, received range {first_id}-{final_id}"
             )
         try:
-            self._apply_side(self.bids, event.get("b", []))
-            self._apply_side(self.asks, event.get("a", []))
+            if self._apply_side(self.bids, event.get("b", [])):
+                self._bid_prices_sorted = None
+            if self._apply_side(self.asks, event.get("a", [])):
+                self._ask_prices_sorted = None
             self.last_update_id = final_id
             self.event_time_ms = int(event["E"]) if event.get("E") is not None else None
             self.transaction_time_ms = int(event["T"]) if event.get("T") is not None else None
@@ -109,7 +111,8 @@ class LocalOrderBook:
         return True
 
     @staticmethod
-    def _apply_side(side: dict[Decimal, Decimal], changes: list[list[str]]) -> None:
+    def _apply_side(side: dict[Decimal, Decimal], changes: list[list[str]]) -> bool:
+        keys_changed = False
         for price_raw, quantity_raw, *_ in changes:
             try:
                 price, quantity = Decimal(str(price_raw)), Decimal(str(quantity_raw))
@@ -118,13 +121,26 @@ class LocalOrderBook:
             if not price.is_finite() or not quantity.is_finite() or price <= 0 or quantity < 0:
                 raise InvalidBook("Depth update has invalid price or quantity")
             if quantity == 0:
-                side.pop(price, None)
+                if price in side:
+                    side.pop(price)
+                    keys_changed = True
             else:
+                keys_changed = keys_changed or price not in side
                 side[price] = quantity
+        return keys_changed
 
     def top_levels(self, side: str, count: int = 20) -> list[tuple[Decimal, Decimal]]:
+        if not self.valid:
+            raise InvalidBook(self.invalid_reason or "book_invalid")
+        if count < 1:
+            return []
         levels = self.bids if side == "bid" else self.asks
-        prices = sorted(levels, reverse=(side == "bid"))[:count]
+        cache_name = "_bid_prices_sorted" if side == "bid" else "_ask_prices_sorted"
+        prices = getattr(self, cache_name)
+        if prices is None:
+            prices = sorted(levels, reverse=(side == "bid"))
+            setattr(self, cache_name, prices)
+        prices = prices[:count]
         return [(price, levels[price]) for price in prices]
 
     def to_checkpoint(self) -> dict[str, Any]:

@@ -56,9 +56,15 @@ class Settings:
     lob_classification_horizons_seconds: tuple[int, ...] = (1, 5, 10)
     lob_primary_horizon_seconds: int = 5
     lob_direction_delta_quantile: float = 0.5
-    lob_stress_quantile: float = 0.95
-    lob_stress_depth_quantile: float = 0.05
-    lob_stress_impact_notional_usdt: float = 1000.0
+    lob_stress_quantile: float = 0.975
+    lob_stress_depth_quantile: float = 0.025
+    lob_stress_impact_notional_usdt: float = 100000.0
+    lob_stress_impact_notional_by_symbol: dict[str, float] | None = None
+    lob_tick_size_by_symbol: dict[str, float] | None = None
+    lob_stress_min_positive_rate: float = 0.02
+    lob_stress_max_positive_rate: float = 0.10
+    lob_max_missing_feature_fraction: float = 0.10
+    lob_max_staleness_seconds: int = 2
     lob_first_validation_month: str = "2025-08"
     lob_development_end_utc: str = "2025-11-30T23:59:59Z"
     lob_untouched_test_start_utc: str = "2025-12-01T00:00:00Z"
@@ -66,6 +72,15 @@ class Settings:
     lob_embargo_seconds: int = 300
     lob_feature_lookback_seconds: int = 300
     lob_deeplob_lookback_seconds: int = 100
+
+    def impact_notional_for(self, symbol: str) -> float:
+        return float((self.lob_stress_impact_notional_by_symbol or {}).get(symbol.upper(), self.lob_stress_impact_notional_usdt))
+
+    def tick_size_for(self, symbol: str) -> float:
+        mapping = self.lob_tick_size_by_symbol or {}
+        if symbol.upper() not in mapping:
+            raise ValueError(f"No price tick size is configured for {symbol.upper()}")
+        return float(mapping[symbol.upper()])
 
     def __post_init__(self) -> None:
         if not self.symbols or len(set(self.symbols)) != len(self.symbols):
@@ -110,6 +125,14 @@ class Settings:
             raise ValueError("Direction and stress quantiles must be ordered inside (0, 1)")
         if self.lob_stress_impact_notional_usdt <= 0 or min(self.lob_embargo_seconds, self.lob_feature_lookback_seconds, self.lob_deeplob_lookback_seconds) < 1:
             raise ValueError("Impact notional, feature lookback, deep-model lookback, and embargo must be positive")
+        if not 0 < self.lob_stress_min_positive_rate < self.lob_stress_max_positive_rate < 1:
+            raise ValueError("Stress prevalence bounds must be ordered inside (0, 1)")
+        if not 0 < self.lob_max_missing_feature_fraction < 1 or self.lob_max_staleness_seconds < 0:
+            raise ValueError("Missing-feature fraction and replay staleness limit are invalid")
+        impact_map = self.lob_stress_impact_notional_by_symbol or {}
+        tick_map = self.lob_tick_size_by_symbol or {}
+        if any(float(value) <= 0 for value in impact_map.values()) or any(float(value) <= 0 for value in tick_map.values()):
+            raise ValueError("Symbol-specific impact notionals and tick sizes must be positive")
         minimum_embargo = max(max(self.lob_classification_horizons_seconds), self.lob_feature_lookback_seconds, self.lob_deeplob_lookback_seconds)
         if self.lob_embargo_seconds < minimum_embargo:
             raise ValueError("lob.embargo_seconds must cover the horizon, longest feature lookback, and DeepLOB sequence")
@@ -186,9 +209,19 @@ def load_settings(path: Path | str | None = None) -> Settings:
         lob_classification_horizons_seconds=tuple(int(value) for value in lob.get("classification_horizons_seconds", [1, 5, 10])),
         lob_primary_horizon_seconds=int(lob.get("primary_horizon_seconds", 5)),
         lob_direction_delta_quantile=float(lob.get("direction_delta_quantile", 0.5)),
-        lob_stress_quantile=float(lob.get("stress_quantile", 0.95)),
-        lob_stress_depth_quantile=float(lob.get("stress_depth_quantile", 0.05)),
-        lob_stress_impact_notional_usdt=float(lob.get("stress_impact_notional_usdt", 1000)),
+        lob_stress_quantile=float(lob.get("stress_quantile", 0.975)),
+        lob_stress_depth_quantile=float(lob.get("stress_depth_quantile", 0.025)),
+        lob_stress_impact_notional_usdt=float(lob.get("stress_impact_notional_usdt", 100000)),
+        lob_stress_impact_notional_by_symbol={
+            str(key).upper(): float(value) for key, value in lob.get("stress_impact_notional_by_symbol", {}).items()
+        },
+        lob_tick_size_by_symbol={
+            str(key).upper(): float(value) for key, value in lob.get("tick_size_by_symbol", {}).items()
+        },
+        lob_stress_min_positive_rate=float(lob.get("stress_min_positive_rate", 0.02)),
+        lob_stress_max_positive_rate=float(lob.get("stress_max_positive_rate", 0.10)),
+        lob_max_missing_feature_fraction=float(lob.get("max_missing_feature_fraction", 0.10)),
+        lob_max_staleness_seconds=int(lob.get("max_staleness_seconds", 2)),
         lob_first_validation_month=str(lob.get("first_validation_month", "2025-08")),
         lob_development_end_utc=str(lob.get("development_end_utc", "2025-11-30T23:59:59Z")),
         lob_untouched_test_start_utc=str(lob.get("untouched_test_start_utc", "2025-12-01T00:00:00Z")),

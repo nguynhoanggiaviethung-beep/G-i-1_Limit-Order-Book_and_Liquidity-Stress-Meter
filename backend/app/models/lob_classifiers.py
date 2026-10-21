@@ -31,11 +31,14 @@ class EncodedClassifier:
 
 
 LOB_CLASSIFICATION_FEATURES = (
-    "relative_spread_bps", "microprice_minus_mid_bps",
+    "spread_ticks", "relative_spread_bps", "microprice_minus_mid_bps",
     "obi_qty_1", "obi_qty_5", "obi_qty_10", "obi_qty_20",
     "bid_depth_qty_5", "ask_depth_qty_5", "bid_depth_qty_10", "ask_depth_qty_10",
-    "bid_depth_qty_20", "ask_depth_qty_20", "ofi_1s", "ofi_5s", "ofi_10s",
+    "bid_depth_qty_20", "ask_depth_qty_20", "depth_notional_10",
+    "ofi_1s", "ofi_5s", "ofi_10s",
     "trade_imbalance_5s", "trade_imbalance_10s", "price_impact_bps",
+    "addition_intensity_1s", "cancellation_intensity_1s",
+    "addition_intensity_5s", "cancellation_intensity_5s",
     "rv_10s", "rv_60s", "rv_300s",
 )
 

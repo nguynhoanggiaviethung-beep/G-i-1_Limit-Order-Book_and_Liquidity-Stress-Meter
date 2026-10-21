@@ -56,7 +56,9 @@ def _impact_bps(levels: list[tuple[float, float]], notional: float, mid: float) 
     return (vwap - mid) / mid * 10000.0
 
 
-def compute_microstructure_features(row: dict[str, Any], impact_notional_usdt: float = 1000.0) -> dict[str, float | None]:
+def compute_microstructure_features(
+    row: dict[str, Any], impact_notional_usdt: float = 100000.0, tick_size: float | None = None
+) -> dict[str, float | None]:
     """Derive spread, depth, imbalance, microprice, and fixed-notional impact."""
     bids, asks = _levels(row, "bid"), _levels(row, "ask")
     if not bids or not asks:
@@ -75,6 +77,7 @@ def compute_microstructure_features(row: dict[str, Any], impact_notional_usdt: f
         "mid_price": mid,
         "absolute_spread": spread,
         "relative_spread_bps": spread / mid * 10000.0 if mid else None,
+        "spread_ticks": spread / tick_size if tick_size and tick_size > 0 else None,
         "microprice": microprice,
         "microprice_minus_mid_bps": (microprice - mid) / mid * 10000.0 if mid else None,
     }
@@ -85,12 +88,18 @@ def compute_microstructure_features(row: dict[str, Any], impact_notional_usdt: f
         result[f"bid_depth_qty_{depth}"] = bid_depth
         result[f"ask_depth_qty_{depth}"] = ask_depth
         result[f"depth_qty_{depth}"] = total
+        result[f"bid_depth_notional_{depth}"] = sum(price * quantity for price, quantity in bids[:depth])
+        result[f"ask_depth_notional_{depth}"] = sum(price * quantity for price, quantity in asks[:depth])
+        result[f"depth_notional_{depth}"] = result[f"bid_depth_notional_{depth}"] + result[f"ask_depth_notional_{depth}"]
         result[f"obi_qty_{depth}"] = (bid_depth - ask_depth) / total if total else 0.0
     buy_impact = _impact_bps(asks, impact_notional_usdt, mid)
     sell_impact = _impact_bps(bids, impact_notional_usdt, mid)
     result["impact_buy_bps"] = buy_impact
     result["impact_sell_bps"] = -sell_impact if sell_impact is not None else None
-    available_impacts = [value for value in (buy_impact, result["impact_sell_bps"]) if value is not None]
-    result["price_impact_bps"] = max(available_impacts) if available_impacts else None
+    result["price_impact_bps"] = (
+        max(buy_impact, result["impact_sell_bps"])
+        if buy_impact is not None and result["impact_sell_bps"] is not None
+        else None
+    )
     return result
 

@@ -1,6 +1,10 @@
 from math import isclose
 
+import pandas as pd
+
+from app.features.classification_features import build_classification_features
 from app.features.lob_book_features import compute_book_features
+from app.features.microstructure import compute_microstructure_features
 from app.orderbook.book_state import LocalOrderBook
 
 
@@ -31,3 +35,24 @@ def test_invalid_book_does_not_produce_features():
         assert "invalid" in str(error)
     else:
         raise AssertionError("Invalid books must not emit features")
+
+
+def test_book_microstructure_and_vector_features_share_the_same_formulas():
+    bids = [[str(100 - level), str(3 + level / 10)] for level in range(20)]
+    asks = [[str(102 + level), str(2 + level / 10)] for level in range(20)]
+    book = LocalOrderBook.from_snapshot("BTCUSDT", {"lastUpdateId": 8, "bids": bids, "asks": asks})
+    row = {"symbol": "BTCUSDT", "timestamp_utc": "2025-01-01T00:00:00Z", "book_valid": True, "tick_size": 2}
+    for side, levels in (("bid", bids), ("ask", asks)):
+        for index, (price, quantity) in enumerate(levels, start=1):
+            row[f"{side}_price_{index}"] = price
+            row[f"{side}_qty_{index}"] = quantity
+
+    canonical = compute_book_features(book, tick_size=2)
+    row_features = compute_microstructure_features(row, impact_notional_usdt=5000, tick_size=2)
+    vector = build_classification_features(pd.DataFrame([row]), impact_notional_usdt=5000, tick_size=2).iloc[0]
+    for key in ("absolute_spread", "relative_spread_bps", "spread_ticks", "mid_price", "microprice", "microprice_minus_mid_bps", "obi_qty_5", "obi_qty_10", "obi_qty_20"):
+        assert isclose(float(canonical[key]), float(row_features[key]))
+        assert isclose(float(canonical[key]), float(vector[key]))
+    assert isclose(float(row_features["price_impact_bps"]), float(vector["price_impact_bps"]))
+    assert "bid_top_level_share_20" in canonical
+    assert "bid_depth_concentration_20" not in canonical
