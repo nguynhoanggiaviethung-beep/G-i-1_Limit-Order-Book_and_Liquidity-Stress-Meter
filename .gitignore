@@ -4,6 +4,8 @@ data/processed/
 data/features/
 data/snapshots/
 data/external/
+data/state/
+logs/
 .env
 .env.*
 !.env.example
@@ -15,6 +17,9 @@ backend/artifacts/*
 results/metrics/auto_sync_status.json
 results/archive/legacy_mvp_*/
 results/forecasts/*.parquet
+results/forecasts/lob/
+results/metrics/lob/
+results/metrics/lob_data_quality.json
 results/robustness/
 *.log
 __pycache__/

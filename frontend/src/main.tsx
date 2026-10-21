@@ -1,8 +1,8 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { AppRouter } from "./app/router";
+import { LOBApp } from "./LOBApp";
 import "./styles.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
-  <React.StrictMode><AppRouter /></React.StrictMode>,
+  <React.StrictMode><LOBApp /></React.StrictMode>,
 );

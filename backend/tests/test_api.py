@@ -1,63 +1,40 @@
-import pytest
-from fastapi import HTTPException
-from pydantic import ValidationError
+from types import SimpleNamespace
 
-from app.api.routes.forecasts import create_forecast
+from starlette.requests import Request
+
 from app.api.routes.health import health
-from app.api.schemas.forecast import ForecastRequest
+from app.api.routes.lob import get_latest_features, get_latest_lob
 from app.main import app
-from app.api.routes import forecasts
 
 
-def test_health_handler_returns_ok_and_is_registered():
-    assert app.title == "Crypto Volatility and Tail Risk API"
-    assert health() == {"status": "ok"}
-    assert "/health" in app.openapi()["paths"]
+def test_health_and_lob_read_only_routes_are_registered():
+    paths = app.openapi()["paths"]
+    assert app.title == "LOB-Only Crypto Risk Research API"
+    assert paths["/health"]["get"]
+    assert paths["/api/v1/collector/status"]["get"]
+    assert paths["/api/v1/lob/latest"]["get"]
+    assert paths["/api/v1/features/latest"]["get"]
+    assert "/api/v1/forecasts" not in paths
 
 
-def test_forecast_route_is_registered():
-    assert "post" in app.openapi()["paths"]["/api/v1/forecasts"]
+def test_health_is_read_only_and_reports_not_started():
+    scope = {"type": "http", "method": "GET", "path": "/health", "headers": [], "query_string": b"", "app": app}
+    assert health(Request(scope)) == {"status": "ok", "collector_status": {"status": "not_started"}}
 
 
-def test_research_forecast_route(monkeypatch):
-    expected = {"forecast_id": "btc-h1-random_walk-20261001", "mode": "research"}
-    monkeypatch.setattr(forecasts, "load_forecast", lambda *args: expected)
-    response = create_forecast(ForecastRequest(symbol="BTCUSDT"))
-    assert response == expected
-
-
-def test_production_forecast_route(monkeypatch):
-    expected = {"forecast_id": "production-btc-h1-har", "mode": "production"}
-    monkeypatch.setattr(forecasts, "create_production_forecast", lambda *args: expected)
-    response = create_forecast(
-        ForecastRequest(symbol="BTCUSDT", model="har", mode="production")
+def test_latest_book_and_features_return_lob_only_data():
+    snapshot = {"symbol": "BTCUSDT", "book_valid": True, "bids": [["100", "2"]], "asks": [["101", "3"]]}
+    feature = {"symbol": "BTCUSDT", "book_valid": True, "mid_price": 100.5, "obi_qty_5": -0.2}
+    service = SimpleNamespace(
+        get_status=lambda: {"symbol_status": {"BTCUSDT": {"book_valid": True}}},
+        get_latest_book=lambda _symbol: snapshot,
+        get_latest_features=lambda _symbol: feature,
     )
-    assert response == expected
-
-
-def test_forecast_request_rejects_invalid_inputs():
-    with pytest.raises(ValidationError):
-        ForecastRequest(symbol="BTCUSDT", horizon_days=2)
-    with pytest.raises(ValidationError):
-        ForecastRequest(symbol="BTCUSDT", confidence_levels=[0.9])
-
-
-def test_forecast_route_maps_missing_artifact_to_404(monkeypatch):
-    def missing(*_args):
-        raise FileNotFoundError("forecast artifact missing")
-
-    monkeypatch.setattr(forecasts, "load_forecast", missing)
-    with pytest.raises(HTTPException) as error:
-        create_forecast(ForecastRequest(symbol="BTCUSDT"))
-    assert error.value.status_code == 404
-    assert error.value.detail == "forecast artifact missing"
-
-
-def test_forecast_route_maps_runtime_failure_to_503(monkeypatch):
-    def unavailable(*_args):
-        raise RuntimeError("forecast service unavailable")
-
-    monkeypatch.setattr(forecasts, "load_forecast", unavailable)
-    with pytest.raises(HTTPException) as error:
-        create_forecast(ForecastRequest(symbol="BTCUSDT"))
-    assert error.value.status_code == 503
+    scope = {"type": "http", "method": "GET", "path": "/", "headers": [], "query_string": b"", "app": app}
+    request = Request(scope)
+    app.state.lob_collector = service
+    try:
+        assert get_latest_lob(request, "BTCUSDT") == snapshot
+        assert get_latest_features(request, "BTCUSDT") == feature
+    finally:
+        del app.state.lob_collector

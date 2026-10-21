@@ -1,25 +1,42 @@
-# Research defaults from the backend code plan.
-symbols:
-  - BTCUSDT
-  - ETHUSDT
-interval: 5m
-start_date: '2019-01-01'
+# LOB-only input configuration. No candle or trade stream is used.
 data:
   directory: data
 binance:
-  base_url: https://api.binance.com
-  timeout_seconds: 20
-  retries: 5
-auto_sync:
-  enabled: true
-  interval_seconds: 300
-  # Wait briefly after each 5-minute boundary so Binance closes the candle.
-  grace_seconds: 10
-forecast:
-  horizon_days: 1
+  # Public market-data-only endpoint; rotate through official Spot REST alternatives if unavailable.
+  base_url: https://data-api.binance.vision
+  fallback_base_urls:
+    - https://api.binance.com
+    - https://api-gcp.binance.com
+    - https://api1.binance.com
+    - https://api2.binance.com
+    - https://api3.binance.com
+    - https://api4.binance.com
+  timeout_seconds: 4
+  retries: 2
+lob:
+  collection_enabled: true
+  websocket_base_url: wss://stream.binance.com:443
+  websocket_fallback_urls:
+    - wss://data-stream.binance.vision:443
+    - wss://stream.binance.com:9443
+  # 100 levels cover the displayed top-20 book and minimize REST snapshot latency/weight.
+  depth_snapshot_limit: 100
+  update_speed: 100ms
+  sampling_interval_seconds: 1
+  stale_after_seconds: 5
+  raw_file_max_bytes: 67108864
+  flush_rows: 500
+  flush_seconds: 10
+  temporal_history_samples: 3600
+  target_horizons_seconds: [60, 300, 3600]
+  # Longer risk forecasts are issued only from completed, quality-checked UTC LOB days.
+  target_horizons_days: [1, 7, 30]
+  long_online_minimum_train_examples: 30
+  long_online_maximum_train_examples: 500
+  minimum_daily_coverage: 0.995
+  minimum_train_rows: 1000
   test_fraction: 0.2
-risk:
-  confidence_levels:
-    - 0.95
-    - 0.975
-    - 0.99
+  refit_interval_samples: 3600
+  online_minimum_train_examples: 60
+  online_maximum_train_examples: 500
+  online_refit_every_examples: 10

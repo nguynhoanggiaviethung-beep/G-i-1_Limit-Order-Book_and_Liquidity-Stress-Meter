@@ -1,4 +1,4 @@
-# Frozen, compact tuning space. Selection uses validation data only.
+# ARCHIVED: tuning space for the retired candle/OHLCV study; not used by LOB-only commands.
 elasticnet:
   alpha: [0.0001, 0.001, 0.01, 0.1, 1.0]
   l1_ratio: [0.1, 0.5, 0.9, 1.0]

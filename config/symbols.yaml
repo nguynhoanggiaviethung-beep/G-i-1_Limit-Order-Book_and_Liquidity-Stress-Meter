@@ -1,0 +1,4 @@
+# Binance Spot symbols captured by the LOB-only collector.
+symbols:
+  - BTCUSDT
+  - ETHUSDT

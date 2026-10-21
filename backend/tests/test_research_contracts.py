@@ -246,21 +246,3 @@ def test_kupiec_detects_a_known_excess_exception_rate():
     assert abs(well_calibrated.mean() - 0.05) < 0.01
     assert kupiec_uc(well_calibrated, 0.05)["pvalue"] > 0.01
     assert kupiec_uc(misspecified, 0.05)["pvalue"] < 0.01
-
-
-def test_production_forecast_rejects_a_stale_local_feed(monkeypatch):
-    class FrozenDateTime(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return cls(2026, 10, 18, 0, 0, tzinfo=timezone.utc)
-
-    monkeypatch.setattr(forecast_service, "datetime", FrozenDateTime)
-    monkeypatch.setattr(
-        forecast_service,
-        "load_market_data",
-        lambda symbol, interval: pd.DataFrame({
-            "open_time": [pd.Timestamp("2026-10-17T23:00:00Z")],
-        }),
-    )
-    with pytest.raises(ValueError, match="feed is stale"):
-        forecast_service.create_production_forecast("BTCUSDT", "random_walk", 1, [0.95])

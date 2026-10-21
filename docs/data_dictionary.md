@@ -1,37 +1,84 @@
-# Research data dictionary
+# Từ điển dữ liệu LOB-only
 
-| Field | Meaning | Availability / use |
-|---|---|---|
-| `open_time`, `close_time` | Binance Spot candle interval timestamps (UTC) | Raw 5-minute source |
-| `utc_date` | UTC calendar date of candle | Daily aggregation key |
-| `n_bars`, `n_obs` | Candle count and valid adjacent close-to-close returns | Complete day requires both to equal 288 |
-| `is_complete_day` | All expected bars and returns are present | Only complete days enter RV targets |
-| `rv`, `realized_variance` | Sum of squared 5-minute log returns; returns are scaled by 100 | Daily target and predictors, in percent squared |
-| `rv_partial` | Sum of observed squared returns on an incomplete day | Diagnostic only; never modeled |
-| `bpv` | Bipower variation estimate | Jump-robust variation feature |
-| `jump` | Positive part of RV minus BPV | Jump variation component |
-| `rs_pos`, `rs_neg` | Positive/negative realized semivariances | Asymmetric variation predictors |
-| `rq` | Realized quarticity estimate | HARQ adjustment input |
-| `close_ret` | Sum of daily intraday log returns scaled by 100 | Return target and EWMA input, in percent |
-| `available_at_utc` | UTC midnight after the date's close | Enforces point-in-time eligibility |
-| `rv_mean_7`, `rv_mean_30` | Trailing mean RV windows | HAR predictors, known at origin |
-| `target_start`, `target_end` | Direct forecast interval, end exclusive | Next h full UTC days |
-| `actual_rv_mean` | Mean daily RV across target interval | Missing if target is incomplete/unavailable |
-| `y_cum_return` | Sum of daily log returns over target interval | Separate economic downside outcome |
-| `rv_forecast` | Predicted mean RV for direct horizon h | Main forecast output |
-| `sigma_h_approx` | Approximate cumulative return sigma from estimated kappa and h-day RV | In percent; risk scaling input, not a full tail distribution |
-| `var_loss_percent`, `expected_shortfall_loss_percent` | Positive-loss VaR and ES | In percent, at the requested confidence level |
-| `confidence`, `method` | VaR/ES confidence and estimator name | `quantile_model` identifies direct conditional risk forecasts |
-| `actual_loss_percent` | Negative cumulative return, so losses are positive | Risk forecast target; missing until target interval completes |
-| `n_train`, `refit_at` | Training sample count and most recent model refit origin | Point-in-time model audit fields for quantile forecasts |
-| `reliability`, `evaluation_scope` | Interpretive label and OOS/pilot scope | 30-day risk is marked descriptive; pilot is not a full backtest |
-| `data_version` | Research: snapshot-manifest hash; production: synchronized-candle-frame hash | Identifies the exact market data used |
-| `config_hash` | SHA-256 identifier for the relevant model/config contract | Primary RV, direct quantile, and robustness runs may use distinct config hashes |
-| `feature_name`, `observation_time_utc`, `available_at_utc`, `value`, `source` | Normalized external source event | Funding/OI/basis/FRED values are only joined after their recorded availability; raw events live in `data/external/events.parquet` |
-| `external_funding_rate_last` | Latest Binance USDⓈ-M funding settlement | Requires an event within one day and coverage of at least 95% to be emitted |
-| `external_open_interest_value_last`, `external_basis_rate_last` | Latest open-interest notional and perpetual basis rate | Require a recent event and at least 95% coverage; sparse 30-day history is excluded |
-| `external_vix_last`, `external_usd_broad_index_last` | FRED VIXCLS and DTWEXBGS macro observations | First-release vintage and conservative one-day availability lag; DTWEXBGS is a broad USD proxy, not ICE DXY |
+Thời gian lưu bằng UTC. Binance giá/quantity bắt đầu ở dạng decimal string trong raw feed; book map dùng decimal chính xác. Các feature numeric là float khi xuất Parquet.
 
-All daily features are computed from the immutable snapshot under `data/snapshots/<as-of>/`. Forecast outputs are Parquet under `results/forecasts/`. Direct quantile forecasts are written first to `quantile_forecasts.parquet` and incorporated into `risk_forecasts.parquet` by risk evaluation. Rows with a non-`ok` status must not be treated as predictions. Confidence levels are probabilities such as 0.95, while VaR and ES are positive loss magnitudes in percentage points.
+## Raw JSONL
 
-External observations and features are stored separately under `data/external/` and `data/features/external/`; they do not alter the immutable baseline research features or forecasts.
+Vị trí: `data/raw/lob/<symbol>/date=YYYY-MM-DD/events-NNNN.jsonl`.
+
+| Field | Ý nghĩa |
+|---|---|
+| `source` | `binance_spot_ws_diff_depth` hoặc `binance_spot_rest_depth_snapshot`. |
+| `symbol` | Symbol Binance Spot, ví dụ BTCUSDT. |
+| `stream` | Tên diff-depth stream hoặc REST route snapshot. |
+| `connection_id` | ID duy nhất cho mỗi lần kết nối WebSocket. |
+| `collector_version` | Phiên bản logic ghi/đồng bộ collector. |
+| `event_time_utc` | Event time `E` của depth update; không có với REST snapshot. |
+| `transaction_time_utc` | Transaction time nếu event có trường đó; Spot diff-depth hiện có thể không cung cấp. |
+| `received_at_utc` | Thời gian máy local nhận WebSocket event. |
+| `snapshot_received_at_utc` | Thời gian nhận REST snapshot. |
+| `payload` | Raw snapshot/update JSON, gồm sequence ID và các thay đổi bid/ask. |
+
+## Sampled snapshot và feature
+
+Vị trí: `data/processed/lob_snapshots/symbol=<symbol>/date=<day>/` và `data/features/lob/symbol=<symbol>/date=<day>/`.
+
+| Field | Ý nghĩa |
+|---|---|
+| `symbol` | Tài sản của sample. |
+| `sample_time_utc` | Clock time khi trạng thái book được lấy mẫu. |
+| `event_time_utc` | Event time của update mới nhất đã áp dụng. |
+| `received_at_utc` | Local receive time của update mới nhất đã áp dụng. |
+| `last_update_id` | `u` cuối cùng đã áp dụng trong local book. |
+| `book_valid` | True nếu snapshot/update sequence đồng bộ, book không crossed/empty và feed còn mới. |
+| `quality_flags` | Danh sách nguyên nhân invalid/stale khi có. |
+| `event_age_ms` | Chênh lệch sample/receive-event theo milliseconds. |
+| `best_bid`, `best_bid_qty` | Giá và lượng bid tốt nhất. |
+| `best_ask`, `best_ask_qty` | Giá và lượng ask tốt nhất. |
+| `mid_price` | Trung bình best bid/ask, dùng làm proxy. |
+| `absolute_spread` | Ask trừ bid. |
+| `relative_spread_bps` | Spread chia mid-price, nhân 10.000. |
+| `bid_depth_qty_N`, `ask_depth_qty_N` | Tổng quantity top N levels; N=5,10,20. |
+| `bid_depth_notional_N`, `ask_depth_notional_N` | Tổng `price * quantity` top N levels. |
+| `obi_qty_N`, `obi_notional_N` | Imbalance signed trong [-1,1] theo quantity hoặc notional. |
+| `microprice` | Giá bid/ask trọng số theo quantity phía đối diện. |
+| `microprice_minus_mid_bps` | Microprice offset so với mid-price theo bps. |
+| `depth_profile_slope_bid_20`, `depth_profile_slope_ask_20` | Slope của tỷ trọng quantity theo khoảng cách giá top-20, khoảng cách chuẩn hóa theo bps. |
+| `*_lag_1`, `*_change` | Feature lag hoặc sai khác với mẫu trước. |
+| `*_mean_N`, `*_std_N`, `*_q50_N`, `*_q95_N` | Rolling mean/std/median/95th percentile trên tối đa N mẫu trước; N=60,300,3600. |
+| `mid_return` | Log-return giữa mid hiện tại và mẫu trước. |
+| `past_rv_N` | Tổng bình phương return đã quan sát trong tối đa N mẫu gần nhất. |
+
+Snapshot Parquet giữ `bid_levels_top_20_json` và `ask_levels_top_20_json`; raw event stream vẫn được giữ riêng để audit/replay.
+
+## Tóm tắt LOB theo ngày cho dự báo dài hạn
+
+Vị trí: `data/features/lob_daily/symbol=<symbol>/daily_summary.jsonl`. Mỗi dòng chỉ được ghi sau khi một ngày UTC hoàn tất và đạt ít nhất 99,5% coverage, không có khoảng trống mẫu lớn hơn 5 giây.
+
+| Field | Ý nghĩa |
+|---|---|
+| `date_utc` | Ngày UTC được tổng hợp. |
+| `sample_count`, `coverage` | Số mẫu LOB hợp lệ và tỷ lệ so với số mẫu dự kiến trong ngày. |
+| `daily_rv` | Tổng bình phương `mid_return` trong ngày, dùng làm target volatility. |
+| `daily_return` | Tổng log-return mid-price trong ngày. |
+| `lob_features` | Trung bình ngày của spread, microprice offset, OBI và depth top-N. |
+
+Các dòng này giúp nạp lại lịch sử dự báo sau restart; chúng không chứa OHLCV hoặc giao dịch.
+
+## Dataset targets
+
+Vị trí: `data/features/lob_datasets/symbol=<symbol>/horizon_samples=<H>.parquet`.
+
+| Field | Ý nghĩa |
+|---|---|
+| `target_return` | `ln(mid_(t+H)/mid_t)` từ mid-price LOB. |
+| `target_rv` | Tổng bình phương mid-price returns trong H mẫu tương lai. |
+| `target_abs_loss` | `max(-target_return, 0)` theo đơn vị return. |
+| `target_end_utc` | Timestamp cuối target horizon. |
+| `target_valid` | Target chỉ true khi book liên tục, hợp lệ và đúng clock grid hết horizon. |
+
+Không đưa `target_*`, symbol, timestamp hoặc quality metadata vào feature matrix. `target_end_utc` bắt buộc không sớm hơn forecast origin; train row chỉ dùng khi target đã mature tại origin.
+
+## Collector status và manifest
+
+`GET /api/v1/collector/status` trả trạng thái kết nối, book validity, update ID, event rate, latency, reconnect/resync count, sample count, valid-sample ratio, disk-free bytes và lỗi gần nhất. Manifest `data/state/lob/<symbol>/manifest.jsonl` bổ sung artifact path, date/time range, row count, SHA-256 và collector version.

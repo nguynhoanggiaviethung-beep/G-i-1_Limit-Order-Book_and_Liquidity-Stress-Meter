@@ -1,5 +1,4 @@
-# Separate, versioned settings for the direct conditional risk-quantile extension.
-# The primary frozen research.yaml remains unchanged.
+# ARCHIVED: direct quantile settings for the retired candle/OHLCV study.
 quantiles: [0.95, 0.975, 0.99]
 refit_every_days: 30
 min_train_rows: 100

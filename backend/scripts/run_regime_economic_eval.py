@@ -229,4 +229,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    from _legacy_ohlcv import refuse_legacy_ohlcv
+    refuse_legacy_ohlcv("run_regime_economic_eval.py")

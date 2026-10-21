@@ -1,4 +1,4 @@
-# Robustness variants are separate from the frozen primary research config.
+# ARCHIVED: robustness settings for the retired candle/OHLCV study.
 variants:
   har_5_22:
     model: har_5_22

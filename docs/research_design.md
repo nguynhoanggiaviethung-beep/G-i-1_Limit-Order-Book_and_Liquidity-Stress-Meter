@@ -1,42 +1,55 @@
-# Crypto volatility and tail-risk research design
+# Thiết kế nghiên cứu LOB-only
 
-The research pipeline follows `config/research.yaml` and the frozen strategy in the accompanying research documents. Binance Spot BTCUSDT and ETHUSDT 5-minute candles are the source. Research is cut off at **2026-10-01 00:00:00 UTC**, independent of the live updater. This includes the final 5-minute candle of 2026-09-30 only when its close timestamp is at or before the cutoff.
+## Mục tiêu
 
-## Data and point-in-time rules
+Nghiên cứu xem trạng thái và biến động của Limit Order Book (LOB) có giúp dự báo biến động và rủi ro đuôi của mid-price proxy hay không. Feature, target, lựa chọn mô hình và đánh giá đều dùng dữ liệu LOB đã được tái tạo hợp lệ.
 
-`backend/scripts/freeze_snapshot.py` copies only candles whose close time is at or before the cutoff and records SHA-256 hashes, coverage, configuration hashes, and missing intervals in `data/snapshots/<as-of>/manifest.json`. The snapshot is immutable unless explicitly rebuilt with `--force`. Live sync writes under `data/processed/` and never changes an existing research snapshot.
+## Phạm vi nguồn
 
-Daily RV is the sum of squared consecutive 5-minute log returns. The feature builder also computes BPV, jump variation, positive/negative semivariances, realized quarticity, returns, ranges, and volume features. It never fills missing bars. A UTC date is complete only when it has all 288 bars and 288 valid adjacent returns; incomplete dates remain visible with missing target measures and are excluded from training/target windows.
+- Binance Spot REST `GET /api/v3/depth` tạo snapshot khởi đầu.
+- Binance Spot WebSocket `<symbol>@depth@100ms` cung cấp diff-depth updates.
+- Symbol ban đầu là BTCUSDT và ETHUSDT; danh sách lấy từ `config/symbols.yaml`.
+- Không dùng OHLCV, kline, trade, aggTrade, funding, open interest hay dữ liệu ngoài.
+- Lịch sử bắt đầu từ thời gian chạy collector. REST depth không cung cấp lịch sử sổ lệnh.
 
-Forecast origins are 00:00 UTC. Direct targets are the mean RV over the next 1, 7, or 30 complete UTC dates, and cumulative return is retained as a separate loss outcome. Features are available only after the preceding UTC day closes. Training labels are admitted only when their target end is no later than the forecast origin.
+## Đồng bộ book và chất lượng
 
-## Evaluation
+Mỗi symbol có kết nối, snapshot, book map, sequence và reconnect riêng. Collector buffer WebSocket events rồi lấy snapshot. Event đầu tiên được áp dụng phải bao phủ update ID của snapshot; event cũ bị loại. Nếu update range bắt đầu sau `lastUpdateId + 1`, book mất hợp lệ, không phát feature, và collector khởi động lại chu trình bằng một snapshot mới.
 
-The primary split is expanding: initial training through 2022-12-31, validation in 2023, and OOS from 2024-01-01 through the frozen cutoff. Benchmarks include random walk, rolling 7/30-day means, and EWMA(0.94); the implemented HAR family includes HAR, log-HAR, HAR-J, HAR-CJ, SHAR, and HARQ. GARCH-t, GJR-t, EGARCH-t, skew-t GARCH, ElasticNet, random forest, LightGBM, and XGBoost implementations are provided where optional dependencies are installed. Rolling windows of 1,000/1,500 days and RV windows 5/22 are configured robustness extensions.
+Snapshot REST được giới hạn tối đa 5.000 mức mỗi phía. Các mức ngoài snapshot không được biết cho tới khi có update. Giữ event time, transaction time khi nguồn cung cấp, local receive time, connection ID và phiên bản collector. Feed cũ, book rỗng/crossed, lỗi sequence và disconnect đều phải hiện trong status/quality flags.
 
-The report script emits RV/volatility/log-RV metrics, QLIKE, HAC Mincer-Zarnowitz calibration, Diebold-Mariano with HLN correction and a global Holm adjustment, and MCS outputs. Risk evaluation includes parametric normal/t/skew-t, filtered historical simulation, EVT-POT, standardized empirical quantiles, and direct conditional quantile models (`linear_qr`, `lightgbm_quantile`, `qrf`). Direct risk models refit every 30 days and only train on labels whose `target_end <= origin`; prediction quantiles are rearranged to prevent crossing. Their ES is the empirical mean of training losses at or beyond the forecast VaR. VaR/ES evaluation includes quantile loss, Kupiec, Christoffersen, DQ, FZ0 and Acerbi-Szekely diagnostics. Horizons above one day use non-overlapping samples where applicable; 30-day risk conclusions remain descriptive.
+## Sampling và target horizon
 
-Robustness runs use separate `config/robustness.yaml` variants (HAR RV windows 5/22 and 1,000/1,500-day training windows). The economic evaluation includes volatility targeting, risk budgeting and an ES-buffer dynamic margin compared with fixed 5% notional collateral. Margin funding rate and ES buffer are modeling assumptions, not exchange rules. Optional sequence-model code (LSTM, GRU, Transformer) is available behind the PyTorch dependency. External market/macro observations are ingested into separate exploratory files and are never merged into the frozen baseline without a complete point-in-time coverage check. Open-interest and basis APIs have only recent history; a sparse series is excluded from the multi-year forecast matrix.
+Mặc định lấy mẫu theo clock mỗi giây, không giả định stream nhất thiết phát event ở mỗi mốc. Một mẫu chỉ được lưu khi book đồng bộ và event chưa stale. `config/settings.yaml` quy định chu kỳ sampling, thời gian stale tối đa, flush và horizons.
 
-## Reproduction commands
+Mid-price tại mẫu `t`:
 
-Run these from the repository root in PowerShell:
+`mid_t = (best_bid_t + best_ask_t) / 2`
 
-```powershell
-$PY = ".\.venv\Scripts\python.exe"
-& $PY backend\scripts\freeze_snapshot.py
-& $PY backend\scripts\validate_data.py
-& $PY backend\scripts\build_features.py
-& $PY backend\scripts\run_walkforward.py
-& $PY backend\scripts\run_quantile_walkforward.py
-& $PY backend\scripts\make_report_tables.py
-& $PY backend\scripts\run_risk_eval.py
-& $PY backend\scripts\run_regime_economic_eval.py
-& $PY backend\scripts\run_robustness.py
-& $PY backend\scripts\make_paper_tables.py
-& $PY backend\scripts\make_figures.py
-```
+Log-return giữa các mẫu liên tiếp:
 
-For a quick baseline run, restrict `run_walkforward.py` with `--symbol BTCUSDT --horizon 1 --model random_walk --model har`. Full results are written below `results/forecasts`, `results/metrics`, and `results/tables`; local data and frozen Parquet snapshots are excluded from Git.
+`r_t = ln(mid_t / mid_(t-1))`
 
-The historical file currently contains source gaps (the manifest records them). Results therefore describe only complete days and must be interpreted with the coverage manifest. This is not a claim that all possible Binance candles are present. The full walk-forward, quantile and robustness matrix is compute-intensive; optional LightGBM and XGBoost models are skipped unless installed from `requirements-ml.txt`.
+RV mục tiêu tại origin `t` trên `H` bước lấy mẫu phía trước:
+
+`RV_(t,H) = sum(r_(t+i)^2), i=1..H`
+
+Return mục tiêu là `ln(mid_(t+H) / mid_t)`. H mặc định 60, 300 và 3.600 giây. Nếu thiếu mẫu trên grid hoặc book invalid ở horizon tương lai, target được để invalid; không nội suy hay điền giá.
+
+Dashboard còn có dự báo dài hạn 1, 7 và 30 ngày. Nhóm này gộp RV mid-price và đặc trưng spread/OBI/depth/microprice từ LOB theo ngày UTC. Một ngày chỉ hợp lệ khi coverage ít nhất 99,5% và khoảng trống mẫu không quá 5 giây. Nhãn là tổng RV của các ngày tương lai và chỉ được chấm sau khi đủ toàn bộ horizon; không dùng OHLCV hay giao dịch.
+
+VaR/ES đo tổn thất `-return` của mid-price proxy. Chúng không được diễn giải là risk theo execution price.
+
+## Feature
+
+Nhóm feature gồm top-of-book và spread; tổng quantity/notional depth ở 5/10/20 mức; OBI quantity/notional; microprice; depth concentration/profile slope; lag, thay đổi và rolling mean/std/quantiles; mid-price return và trailing RV. Công thức chi tiết nằm trong [methodology.md](methodology.md).
+
+Feature được ghi với sample timestamp, event/receive time, sequence ID, thời gian trễ, trạng thái book và quality flags. Target columns không được đưa vào feature matrix.
+
+## Chia tập và walk-forward
+
+Các mẫu sắp theo clock timestamp, không shuffle. Mỗi origin chỉ được train trên nhãn có `target_end_utc <= origin_time_utc`. Imputer, scaler và Ridge fit lại trên phần quá khứ tại mỗi lần refit; không fit trên OOS. Mặc định phần cuối theo thời gian là OOS; số training tối thiểu và tần suất refit lấy từ cấu hình.
+
+Volatility báo MAE, RMSE và QLIKE. Baseline RV là persistence trên trailing RV; mô hình hồi quy gồm Ridge và histogram gradient boosting. VaR/ES gồm empirical historical baseline và linear quantile regression từ LOB features. ES dùng tail mean từ training losses tại/beyond VaR. Với risk horizons lớn hơn một sample, backtest giảm mẫu OOS về origin không chồng lấn trước khi tính coverage/score.
+
+Kết quả chỉ được xuất nếu có đủ history/label. Nếu chưa đạt ngưỡng, báo `insufficient_*`; không thay bằng dữ liệu OHLCV hay sample tổng hợp.

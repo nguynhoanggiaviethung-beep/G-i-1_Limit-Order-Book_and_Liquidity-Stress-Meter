@@ -1,4 +1,4 @@
-"""Load research and runtime settings from the repository configuration."""
+"""Load runtime settings for the active LOB-only collector and research pipeline."""
 
 from __future__ import annotations
 
@@ -16,18 +16,81 @@ DEFAULT_SETTINGS_PATH = REPOSITORY_ROOT / "config" / "settings.yaml"
 @dataclass(frozen=True)
 class Settings:
     symbols: tuple[str, ...] = ("BTCUSDT", "ETHUSDT")
-    interval: str = "5m"
-    start_date: str = "2019-01-01"
     data_dir: Path = REPOSITORY_ROOT / "data"
-    binance_base_url: str = "https://api.binance.com"
-    request_timeout_seconds: float = 20.0
-    request_retries: int = 5
-    auto_sync_enabled: bool = True
-    auto_sync_interval_seconds: int = 300
-    auto_sync_grace_seconds: int = 10
-    forecast_horizon_days: int = 1
-    test_fraction: float = 0.2
-    confidence_levels: tuple[float, ...] = (0.95, 0.975, 0.99)
+    binance_base_url: str = "https://data-api.binance.vision"
+    binance_fallback_urls: tuple[str, ...] = (
+        "https://api.binance.com",
+        "https://api-gcp.binance.com",
+        "https://api1.binance.com",
+        "https://api2.binance.com",
+        "https://api3.binance.com",
+        "https://api4.binance.com",
+    )
+    request_timeout_seconds: float = 4.0
+    request_retries: int = 2
+    lob_collection_enabled: bool = True
+    lob_ws_url: str = "wss://stream.binance.com:443"
+    lob_ws_fallback_urls: tuple[str, ...] = (
+        "wss://data-stream.binance.vision:443",
+        "wss://stream.binance.com:9443",
+    )
+    lob_depth_snapshot_limit: int = 100
+    lob_update_speed: str = "100ms"
+    lob_sampling_interval_seconds: int = 1
+    lob_stale_after_seconds: int = 5
+    lob_raw_file_max_bytes: int = 67108864
+    lob_flush_rows: int = 500
+    lob_flush_seconds: int = 10
+    lob_temporal_history_samples: int = 3600
+    lob_target_horizons_seconds: tuple[int, ...] = (60, 300, 3600)
+    lob_minimum_train_rows: int = 1000
+    lob_test_fraction: float = 0.2
+    lob_refit_interval_samples: int = 3600
+    lob_online_minimum_train_examples: int = 60
+    lob_online_maximum_train_examples: int = 500
+    lob_online_refit_every_examples: int = 10
+    lob_long_target_horizons_days: tuple[int, ...] = (1, 7, 30)
+    lob_long_online_minimum_train_examples: int = 30
+    lob_long_online_maximum_train_examples: int = 500
+    lob_long_minimum_daily_coverage: float = 0.995
+
+    def __post_init__(self) -> None:
+        if not self.symbols or len(set(self.symbols)) != len(self.symbols):
+            raise ValueError("symbols must be non-empty and unique")
+        if any(not symbol.isalnum() or symbol != symbol.upper() for symbol in self.symbols):
+            raise ValueError("symbols must be uppercase Binance symbol names")
+        if not 1 <= self.lob_depth_snapshot_limit <= 5000:
+            raise ValueError("lob.depth_snapshot_limit must be between 1 and 5000")
+        if self.lob_update_speed not in {"", "100ms"}:
+            raise ValueError("lob.update_speed must be '100ms' or empty for the default stream speed")
+        if self.lob_sampling_interval_seconds < 1 or self.lob_stale_after_seconds < self.lob_sampling_interval_seconds:
+            raise ValueError("lob.stale_after_seconds must be at least the positive sampling interval")
+        if self.lob_raw_file_max_bytes < 1024 * 1024:
+            raise ValueError("lob.raw_file_max_bytes must be at least 1 MiB")
+        if self.lob_flush_rows < 1 or self.lob_flush_seconds < 1 or self.lob_temporal_history_samples < 1:
+            raise ValueError("LOB flush and temporal-history settings must be positive")
+        if not self.lob_target_horizons_seconds or any(value < 1 for value in self.lob_target_horizons_seconds):
+            raise ValueError("lob.target_horizons_seconds must contain positive values")
+        if any(value % self.lob_sampling_interval_seconds for value in self.lob_target_horizons_seconds):
+            raise ValueError("Each LOB horizon must be divisible by lob.sampling_interval_seconds")
+        if not 0 < self.lob_test_fraction < 1 or self.lob_minimum_train_rows < 30 or self.lob_refit_interval_samples < 1:
+            raise ValueError("LOB evaluation settings are invalid")
+        if self.lob_online_minimum_train_examples < 30:
+            raise ValueError("lob.online_minimum_train_examples must be at least 30")
+        if self.lob_online_maximum_train_examples < self.lob_online_minimum_train_examples:
+            raise ValueError("lob.online_maximum_train_examples must be at least the online minimum")
+        if self.lob_online_refit_every_examples < 1:
+            raise ValueError("lob.online_refit_every_examples must be positive")
+        if not self.lob_long_target_horizons_days or any(value not in (1, 7, 30) for value in self.lob_long_target_horizons_days):
+            raise ValueError("lob.target_horizons_days must contain values from 1, 7, and 30")
+        if self.lob_long_online_minimum_train_examples < 30:
+            raise ValueError("lob.long_online_minimum_train_examples must be at least 30")
+        if self.lob_long_online_maximum_train_examples < self.lob_long_online_minimum_train_examples:
+            raise ValueError("lob.long_online_maximum_train_examples must be at least the long minimum")
+        if not 0.9 <= self.lob_long_minimum_daily_coverage <= 1:
+            raise ValueError("lob.minimum_daily_coverage must be in [0.9, 1]")
+        if self.request_timeout_seconds <= 0 or self.request_retries < 1:
+            raise ValueError("Binance timeout and retry settings must be positive")
 
 
 def load_settings(path: Path | str | None = None) -> Settings:
@@ -42,25 +105,58 @@ def load_settings(path: Path | str | None = None) -> Settings:
 
     data = raw.get("data", {})
     binance = raw.get("binance", {})
-    auto_sync = raw.get("auto_sync", {})
-    forecast = raw.get("forecast", {})
-    risk = raw.get("risk", {})
-    symbols = tuple(str(symbol).upper() for symbol in raw.get("symbols", ["BTCUSDT", "ETHUSDT"]))
+    lob = raw.get("lob", {})
+    symbols_raw = raw.get("symbols")
+    if symbols_raw is None:
+        symbols_path = settings_path.with_name("symbols.yaml")
+        symbols_data = yaml.safe_load(symbols_path.read_text(encoding="utf-8")) if symbols_path.exists() else None
+        symbols_raw = (symbols_data or {}).get("symbols", ["BTCUSDT", "ETHUSDT"])
+    symbols = tuple(str(symbol).upper() for symbol in symbols_raw)
     data_dir = Path(data.get("directory", "data"))
     if not data_dir.is_absolute():
         data_dir = REPOSITORY_ROOT / data_dir
     return Settings(
         symbols=symbols,
-        interval=str(raw.get("interval", "5m")),
-        start_date=str(raw.get("start_date", "2019-01-01")),
         data_dir=data_dir,
-        binance_base_url=str(binance.get("base_url", "https://api.binance.com")).rstrip("/"),
-        request_timeout_seconds=float(binance.get("timeout_seconds", 20)),
-        request_retries=int(binance.get("retries", 5)),
-        auto_sync_enabled=bool(auto_sync.get("enabled", True)),
-        auto_sync_interval_seconds=int(auto_sync.get("interval_seconds", 300)),
-        auto_sync_grace_seconds=int(auto_sync.get("grace_seconds", 10)),
-        forecast_horizon_days=int(forecast.get("horizon_days", 1)),
-        test_fraction=float(forecast.get("test_fraction", 0.2)),
-        confidence_levels=tuple(float(value) for value in risk.get("confidence_levels", [0.95, 0.975, 0.99])),
+        binance_base_url=str(binance.get("base_url", "https://data-api.binance.vision")).rstrip("/"),
+        binance_fallback_urls=tuple(
+            str(value).rstrip("/")
+            for value in binance.get("fallback_base_urls", [
+                "https://api.binance.com",
+                "https://api-gcp.binance.com",
+                "https://api1.binance.com",
+                "https://api2.binance.com",
+                "https://api3.binance.com",
+                "https://api4.binance.com",
+            ])
+        ),
+        request_timeout_seconds=float(binance.get("timeout_seconds", 4)),
+        request_retries=int(binance.get("retries", 2)),
+        lob_collection_enabled=bool(lob.get("collection_enabled", True)),
+        lob_ws_url=str(lob.get("websocket_base_url", "wss://stream.binance.com:443")).rstrip("/"),
+        lob_ws_fallback_urls=tuple(
+            str(value).rstrip("/") for value in lob.get("websocket_fallback_urls", [
+                "wss://data-stream.binance.vision:443",
+                "wss://stream.binance.com:9443",
+            ])
+        ),
+        lob_depth_snapshot_limit=int(lob.get("depth_snapshot_limit", 100)),
+        lob_update_speed=str(lob.get("update_speed", "100ms")),
+        lob_sampling_interval_seconds=int(lob.get("sampling_interval_seconds", 1)),
+        lob_stale_after_seconds=int(lob.get("stale_after_seconds", 5)),
+        lob_raw_file_max_bytes=int(lob.get("raw_file_max_bytes", 67108864)),
+        lob_flush_rows=int(lob.get("flush_rows", 500)),
+        lob_flush_seconds=int(lob.get("flush_seconds", 10)),
+        lob_temporal_history_samples=int(lob.get("temporal_history_samples", 3600)),
+        lob_target_horizons_seconds=tuple(int(value) for value in lob.get("target_horizons_seconds", [60, 300, 3600])),
+        lob_minimum_train_rows=int(lob.get("minimum_train_rows", 1000)),
+        lob_test_fraction=float(lob.get("test_fraction", 0.2)),
+        lob_refit_interval_samples=int(lob.get("refit_interval_samples", 3600)),
+        lob_online_minimum_train_examples=int(lob.get("online_minimum_train_examples", 60)),
+        lob_online_maximum_train_examples=int(lob.get("online_maximum_train_examples", 500)),
+        lob_online_refit_every_examples=int(lob.get("online_refit_every_examples", 10)),
+        lob_long_target_horizons_days=tuple(int(value) for value in lob.get("target_horizons_days", [1, 7, 30])),
+        lob_long_online_minimum_train_examples=int(lob.get("long_online_minimum_train_examples", 30)),
+        lob_long_online_maximum_train_examples=int(lob.get("long_online_maximum_train_examples", 500)),
+        lob_long_minimum_daily_coverage=float(lob.get("minimum_daily_coverage", 0.995)),
     )

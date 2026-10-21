@@ -1,4 +1,4 @@
-# Frozen research design from Code Plan v3. Do not change after OOS evaluation.
+# ARCHIVED: prior candle/OHLCV study configuration; not used by the active LOB-only backend.
 as_of_utc: "2026-10-01T00:00:00Z"
 symbols: [BTCUSDT, ETHUSDT]
 sampling:

@@ -1,71 +1,72 @@
-# Crypto Volatility & Tail Risk
+# Crypto Limit Order Book and Liquidity Risk
 
-Backend nghiên cứu dùng Binance Spot BTCUSDT và ETHUSDT, nến 5 phút, realized variance và forecast trực tiếp 1/7/30 ngày. Code nghiên cứu hiện tách hai chế độ: `research` đọc kết quả walk-forward từ snapshot bất biến; `production` đọc dữ liệu Binance đang đồng bộ và tạo forecast mới mà không sửa snapshot hay kết quả lịch sử. Mốc nghiên cứu được cấu hình tại `2026-10-01T00:00:00Z` trong [research.yaml](config/research.yaml).
+Backend nghiên cứu Binance Spot theo hướng **LOB-only** cho BTCUSDT và ETHUSDT. Dữ liệu đầu vào của feature/model chỉ đến từ REST depth snapshot và WebSocket diff-depth updates. Không dùng OHLCV, nến 5 phút, trade hay aggTrade làm đầu vào.
 
-Phần Limit Order Book/Liquidity Stress Meter được giữ làm tài liệu cũ tại [limit_order_book_legacy.md](docs/limit_order_book_legacy.md); pipeline hiện tại tập trung vào volatility và tail risk.
+Mid-price được tính từ best bid/ask trong local book đã đồng bộ. Vì vậy các mục tiêu RV, VaR và ES là proxy dựa trên mid-price LOB; chúng không đại diện giá khớp lệnh độc lập.
 
-## Cài đặt và đồng bộ Binance
+## Giới hạn lịch sử
 
-Chạy trong PowerShell, tại thư mục gốc repository:
+Binance Spot REST depth trả snapshot book hiện tại, không cung cấp lịch sử LOB nhiều năm. Collector bắt đầu tạo lịch sử từ lúc được chạy. Các file OHLCV và kết quả tail-risk cũ còn trên máy được giữ nguyên nhưng backend LOB không đọc chúng. Không nội suy khoảng trống sequence hay thời gian thiếu mẫu.
+
+## Thành phần chính
+
+- `backend/app/ingestion/`: REST snapshot, WebSocket diff-depth và collector độc lập theo symbol.
+- `backend/app/orderbook/`: căn chỉnh snapshot/update ID, cập nhật bid/ask, phát hiện gap và kiểm tra book.
+- `backend/app/storage/`: JSONL raw append-only, Parquet snapshot/feature và manifest SHA-256.
+- `backend/app/features/`: spread, top-N depth, OBI, microprice, lag/rolling features và target từ mid-price.
+- `backend/app/datasets/`: dataset theo thời gian và kiểm tra target availability/leakage.
+- `backend/app/models/` và `backend/app/evaluation/`: baseline persistence/Ridge, VaR/ES lịch sử và đánh giá walk-forward.
+- `backend/app/api/routes/lob.py`: API đọc trạng thái collector, local book và feature mới nhất.
+- `frontend/src/LOBApp.tsx`: dashboard desktop theo dõi LOB trực tiếp.
+- `config/symbols.yaml`, `config/settings.yaml`: cặp giao dịch, sampling, storage và horizon.
+
+## Cài đặt
+
+Chạy trong PowerShell ở thư mục gốc project:
 
 ```powershell
 py -3.11 -m venv .venv
 $PY = ".\.venv\Scripts\python.exe"
 & $PY -m pip install --upgrade pip
-& $PY -m pip install -r requirements.txt -r requirements-dev.txt
-& $PY backend\scripts\sync_data.py
+& $PY -m pip install -r requirements.txt
 ```
 
-Python 3.11 được dùng làm môi trường chuẩn. Các package lõi đã khóa phiên bản trong `requirements.txt`; test/development ở `requirements-dev.txt`. Cài thêm LightGBM và XGBoost để chạy đủ các mô hình cây:
+Không cần Binance API key để đọc market data công khai. REST snapshot thử market-data-only host trước, sau đó luân phiên qua các official Spot REST hosts đã cấu hình nếu endpoint hiện tại không phản hồi. Lệnh sau kiểm tra REST snapshot và nhận ít nhất một diff-depth event cho từng symbol:
 
 ```powershell
-& $PY -m pip install -r requirements-ml.txt
+& $PY backend\scripts\test_connection.py
 ```
 
-PyTorch là tùy chọn riêng cho các thử nghiệm deep learning, hiện chưa thuộc pipeline phát hành:
+## Chạy collector và API
 
-```powershell
-& $PY -m pip install -r requirements-dl.txt
-```
-
-Tải nguồn ngoại sinh để khảo sát riêng (không thay đổi snapshot baseline). Binance futures không cần API key; FRED cần API key đặt trong biến môi trường PowerShell:
-
-```powershell
-$env:FRED_API_KEY = "<FRED API key của bạn>"
-& $PY backend\scripts\fetch_external_data.py
-& $PY backend\scripts\build_external_features.py
-```
-
-Fetcher lưu `data/external/events.parquet`; feature point-in-time tách riêng dưới `data/features/external/<as-of>/` kèm coverage report. OI/basis có thể bị loại do không đủ lịch sử.
-
-Lần tải đầu lấy lịch sử từ `2019-01-01`; các lần sau đồng bộ tiếp phần còn thiếu và lưu nến đóng vào `data/processed/`. Dữ liệu thô và Parquet lớn nằm ngoài Git. Khi FastAPI đang chạy, bộ đồng bộ nền tiếp tục cập nhật mỗi 5 phút; xem trạng thái tại `http://127.0.0.1:8000/api/v1/sync-status`.
-
-## Chạy nghiên cứu
-
-Lệnh dưới đây dựng snapshot đúng mốc cấu hình, tạo feature, chạy walk-forward, conditional quantile VaR/ES, robustness, đánh giá kinh tế và xuất bảng/biểu đồ. Để đồng bộ Binance trước pipeline, thêm `--sync`. Snapshot có sẵn được giữ bất biến; chỉ dùng `--force-snapshot` khi chủ động muốn dựng lại nó từ dữ liệu local.
+Khởi động API bằng Uvicorn. Khi server chạy, collector tự kết nối và lưu dữ liệu cho từng symbol; lỗi một symbol không dừng symbol còn lại.
 
 ```powershell
 $PY = ".\.venv\Scripts\python.exe"
-& $PY backend\scripts\run_pipeline.py
+& $PY -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000 --reload
 ```
 
-Một lượt đầy đủ có thể chạy lâu: có nhiều symbol/horizon, GARCH, quantile forest và các biến thể robustness. Mô hình LightGBM/XGBoost được bỏ qua có thông báo nếu chưa cài `requirements-ml.txt`. Lệnh nhanh dưới đây chỉ chạy baseline RV, không chạy phần risk, quantile hay robustness:
+Mở `http://127.0.0.1:8000/docs` để xem API. Các endpoint đọc dữ liệu:
+
+- `GET /health` — trạng thái backend và collector.
+- `GET /api/v1/collector/status` — kết nối, event rate, độ trễ, update ID, reconnect/resync, book-valid time và dung lượng trống.
+- `GET /api/v1/lob/latest?symbol=BTCUSDT` — top 20 bid/ask gần nhất khi book còn hợp lệ và mới.
+- `GET /api/v1/features/latest?symbol=BTCUSDT` — feature LOB mới nhất cùng quality flags.
+- `GET /api/v1/forecasts/latest?symbol=BTCUSDT` — gồm nhóm theo dõi 1 phút/5 phút/1 giờ và dự báo biến động dài hạn 1/7/30 ngày; so sánh benchmark truyền thống với mô hình LOB và chấm QLIKE khi nhãn tương lai đã hoàn tất.
+
+WebSocket diff-depth được nhận liên tục; cấu hình sampling hiện lưu một mẫu theo clock mỗi giây. Dashboard đọc API mỗi 1 giây khi feed ổn định, và giãn nhịp kiểm tra khi đang kết nối lại. Nếu chưa có book hợp lệ, endpoint book/features trả 503 thay vì đưa dữ liệu stale ra như dữ liệu mới; forecast endpoint vẫn trả số mẫu và lỗi kết nối để giải thích trạng thái.
+
+Có thể chạy collector riêng không kèm API bằng:
 
 ```powershell
-& $PY backend\scripts\run_pipeline.py --symbol BTCUSDT --horizon 1 --model random_walk --skip-mcs --skip-risk --skip-quantile --skip-robustness
+& $PY backend\scripts\collect_lob.py
 ```
 
-Kết quả được ghi dưới `results/forecasts/`, `results/metrics/`, `results/tables/` và `results/figures/`. Pipeline xuất các bảng T1–T11, SVG F1–F9, regime metrics, volatility targeting, risk budget và dynamic margin. Kiểm tra độ phủ dữ liệu trong `data/snapshots/<as-of>/manifest.json` và `results/metrics/snapshot_quality.json`; các khoảng thiếu được giữ nguyên, không nội suy.
+Chạy **một trong hai** cách thu thập trên một thư mục dữ liệu tại cùng thời điểm, tránh ghi hai collector song song.
 
-Workspace có ma trận forecast RV cho BTCUSDT/ETHUSDT × 1/7/30 ngày. Mỗi chuỗi có 1,005 origin OOS cho 16 model cổ điển và ba model cây (`lightgbm_l2`, `lightgbm_qlike`, `xgboost`). Forecast quantile trực tiếp (`linear_qr`, `lightgbm_quantile`, `qrf`) được lưu riêng trong `results/forecasts/quantile_forecasts.parquet` và được đưa vào đánh giá VaR/ES. Các bảng T1–T11 và hình F1–F9 được tái tạo từ forecast, risk và robustness artifacts. Kết quả horizon 30 ngày vẫn chỉ mang tính mô tả do số quan sát kiểm định hiệu dụng nhỏ. LSTM, GRU và Transformer có code tùy chọn nhưng chưa có forecast metrics nếu chưa cài PyTorch và chạy walk-forward cho các model này.
+## Chạy giao diện
 
-## Chạy giao diện frontend
-
-Frontend React/TypeScript nằm trong `frontend/` và được tối ưu để trình bày trên laptop/PC. Thanh đầu trang có hai chế độ: “Dự báo” dùng dữ liệu Binance mới nhất; “Kết quả nghiên cứu” mở điều hướng tới toàn bộ bảng T1–T11 và hình F1–F9 trên dữ liệu lịch sử đã lưu. Màn hình dự báo giải thích bốn chỉ số bằng tiếng Việt, cho nhập số tiền, hiện khoảng thời gian dự báo theo giờ Việt Nam, xem 60 quan sát walk-forward và đối chiếu với HAR. Trang đánh giá mô hình nêu QLIKE của mô hình tốt nhất so với HAR theo tài sản, kỳ hạn và số kỳ kiểm tra tương ứng.
-
-VaR/ES chỉ được quy đổi sang số tiền khi backend trả về Filtered Historical Simulation (FHS). Production hiện trả VaR/ES xấp xỉ chuẩn, vì vậy giao diện ghi rõ phương pháp và ẩn số tiền lỗ cho tới khi có FHS. Kỳ hạn 30 ngày được gắn nhãn mô tả; các cột p-value bị ẩn.
-
-Mở hai terminal tại thư mục repository. Terminal thứ nhất chạy backend như hướng dẫn ở phần tiếp theo. Terminal thứ hai cài và chạy frontend bằng Node.js 22 trở lên:
+Mở terminal thứ hai. Nếu terminal hiện tại đã ở trong `frontend`, bỏ qua `cd frontend`.
 
 ```powershell
 cd frontend
@@ -73,57 +74,36 @@ npm ci
 npm run dev
 ```
 
-Mở [http://127.0.0.1:5173](http://127.0.0.1:5173). Vite chuyển tiếp `/api` tới backend ở `127.0.0.1:8000`; luồng giá nến đang chạy được làm mới trên giao diện mỗi 5 giây. Khi muốn backend tự phục vụ giao diện đã build, chạy `npm run build` trong `frontend/`, sau đó mở [http://127.0.0.1:8000](http://127.0.0.1:8000). Tài liệu API vẫn ở `/docs`.
+Mở `http://127.0.0.1:5173`. Giữ cả API/collector và Vite đang chạy. Nếu đã đứng ở thư mục `frontend`, không chạy `cd frontend` lần nữa.
 
-Hướng dẫn mở dashboard, trình tự thuyết trình, cách diễn giải từng chỉ số và các giới hạn hiện tại nằm trong [bản Markdown](HUONG_DAN_SU_DUNG_DASHBOARD_TAIL_RISK.md) và [bản Word mới](HUONG_DAN_SU_DUNG_DASHBOARD_TAIL_RISK_MOI.docx). Gói mã nguồn frontend kèm hai bản hướng dẫn nằm trong `frontend_crypto_tail_risk_presentation.zip`.
+## Kiểm tra dữ liệu và tạo kết quả nghiên cứu
 
-Sinh lại kiểu TypeScript từ OpenAPI sau khi thay đổi API bằng `npm run api:types`. Kiểm tra giao diện bằng `npm test`; Playwright/Axe có thể chạy với `npm run test:e2e` sau khi cài browser của Playwright.
-
-## Chạy API và xem dự báo
+Raw event được append theo `data/raw/lob/<symbol>/date=YYYY-MM-DD/`. Feature Parquet và sampled top-20 snapshots được partition theo symbol/ngày. Manifest ở `data/state/lob/<symbol>/manifest.jsonl` ghi path, time range, row count, checksum, collector version và thống kê book hợp lệ.
 
 ```powershell
-$PY = ".\.venv\Scripts\python.exe"
-& $PY -m uvicorn app.main:app --app-dir backend --reload
+& $PY backend\scripts\validate_lob.py
+& $PY backend\scripts\build_lob_dataset.py
+& $PY backend\scripts\run_lob_evaluation.py
 ```
 
-Mở tài liệu API tại [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs). Endpoint `POST /api/v1/forecasts` nhận JSON:
+Nhóm theo dõi intraday tạo target 60 giây, 300 giây và 3.600 giây từ mẫu một giây. RV tương lai là tổng bình phương log-return mid-price trong đúng horizon. HAR-RV và Ridge/Gradient Boosting được huấn luyện tiền trình sau ít nhất 60 nhãn hoàn tất, không chồng lấn.
 
-```json
-{
-  "symbol": "BTCUSDT",
-  "horizon_days": 1,
-  "model": "har",
-  "mode": "research",
-  "confidence_levels": [0.95, 0.975, 0.99]
-}
-```
+Nhóm dài hạn gộp mid-price returns và đặc trưng spread/imbalance/depth/microprice thành ngày UTC. Một ngày chỉ được dùng khi có ít nhất 99,5% mẫu dự kiến và không có khoảng trống lớn hơn 5 giây. Dự báo 1/7/30 ngày là RV tích lũy tương lai, không phải giá mục tiêu. Rolling mean là benchmark; HAR-RV dùng RV ngày 1/7/30, Ridge và Gradient Boosting bổ sung trung bình đặc trưng LOB ngày. Dự báo dài hạn chốt theo ngày UTC hoàn chỉnh gần nhất. Các nhãn huấn luyện chỉ mature sau khi toàn bộ kỳ hạn tương lai hoàn tất; cần khoảng 31/43/89 ngày LOB liên tục để có 30 nhãn mature cho horizon 1/7/30 ngày, gồm lookback trước forecast đầu tiên. Các ngày tóm tắt được lưu tại `data/features/lob_daily/` để khôi phục warm-up sau khi khởi động lại. QLIKE 7/30 ngày dùng origin hằng ngày có cửa sổ chồng lấn nên chỉ mang tính mô tả.
 
-Đổi `mode` thành `production` để fit lại mô hình trên các ngày hoàn chỉnh từ dữ liệu Binance local mới nhất. Production từ chối feed đã cũ hơn 15 phút; VaR/ES của response được ghi rõ là xấp xỉ phân phối chuẩn. Chế độ này không lưu hay sửa forecast research. Model production mặc định dùng hyperparameter trong code; tuning theo purged CV áp dụng cho walk-forward research.
+VaR/ES lịch sử ngắn hạn chỉ hiển thị khi có đủ các cửa sổ hoàn tất (200 mẫu cho VaR 95%, 1.000 mẫu cho VaR 99%) để tránh diễn giải đuôi phân phối từ quá ít quan sát. Walk-forward chỉ dùng nhãn đã kết thúc trước origin; các khoảng invalid/gap không được tạo target.
 
-Ví dụ PowerShell cho production:
+Kết quả nằm ở `results/metrics/lob/`, `results/forecasts/lob/` và QA ở `results/metrics/lob_data_quality.json`. Nếu dữ liệu hoặc OOS tail sample chưa đủ, script ghi trạng thái thiếu dữ liệu thay vì tạo kết quả giả. Mốc nghiên cứu lịch sử sẽ bắt đầu từ khi collector chạy; không tuyên bố đây là backtest nhiều năm.
 
-```powershell
-$body = @{
-  symbol = "BTCUSDT"
-  horizon_days = 1
-  model = "har"
-  mode = "production"
-  confidence_levels = @(0.95, 0.975, 0.99)
-} | ConvertTo-Json
-Invoke-RestMethod -Method Post `
-  -Uri "http://127.0.0.1:8000/api/v1/forecasts" `
-  -ContentType "application/json" -Body $body
-```
+## Sampling, sequence và độ phủ book
 
-`research` cần các forecast đã tạo trước bằng pipeline. `GET /api/v1/forecasts/{forecast_id}` tra forecast nghiên cứu đã lưu; response production là dự báo tức thời, không được lưu để tra lại.
+Collector mở WebSocket trước, buffer diff-depth events, lấy REST snapshot, bỏ event cũ và chỉ phát hành book sau event đầu tiên bao phủ `lastUpdateId`. Update bị stale được bỏ; nếu `U > lastUpdateId + 1`, book bị invalid và collector đồng bộ lại bằng snapshot. Quantity bằng 0 xóa mức giá.
 
-## Thiết kế, giới hạn và trạng thái
+Binance REST hỗ trợ snapshot tối đa 5.000 mức mỗi phía; cấu hình hiện lấy 100 mức để giảm độ trễ và REST weight, vẫn đủ cho top-20 levels dashboard hiển thị. Nếu snapshot trả về sau update stream, collector đổi REST host rồi thử đồng bộ lại, thay vì lặp lại endpoint cũ. Khi WebSocket lỗi, lần reconnect kế tiếp đổi qua host stream dự phòng. Các mức sâu hơn snapshot ban đầu không được biết cho đến khi Binance gửi thay đổi mức đó; nghiên cứu phải giới hạn diễn giải độ sâu theo những mức đã được quan sát. Mọi timestamp lưu UTC gồm event time và local receive time riêng biệt.
 
-- Quy tắc nguồn, mốc thời gian, feature, chia tập và thước đo nằm trong [research_design.md](docs/research_design.md), [methodology.md](docs/methodology.md) và [data_dictionary.md](docs/data_dictionary.md).
-- Nến 5 phút được xem là hoàn chỉnh khi có đủ 288 nến và 288 lợi suất liên tiếp trong ngày UTC. Ngày lỗi/gap không trở thành target.
-- Risk 7/30 ngày dùng giả định đường sigma ngày phẳng trong FHS; kết quả 30 ngày chỉ mang tính mô tả do mẫu kiểm định hiệu dụng nhỏ.
-- VaR/ES gồm các phương pháp phân phối, FHS/EVT và mô hình quantile trực tiếp (`linear_qr`, `lightgbm_quantile`, `qrf`). Với quantile model, VaR là quantile có điều kiện; ES là trung bình đuôi loss trong tập huấn luyện tại thời điểm forecast, nên được ghi nhận là ước lượng đuôi thực nghiệm. Quantile và robustness dùng cấu hình riêng, không sửa `config/research.yaml`.
-- Có adapter tùy chọn cho funding, open interest, basis và macro FRED; chạy lệnh bên dưới để lưu event và tạo feature riêng. Feature chỉ được dùng khi còn trong thời hạn dữ liệu và đạt ngưỡng coverage; file feature ngoại sinh không được trộn vào snapshot baseline. VIX lấy từ `VIXCLS`; `DTWEXBGS` là proxy USD diện rộng, không phải chỉ số ICE DXY. Binance chỉ cung cấp lịch sử basis/open interest gần đây nên các biến này thường bị coverage gate loại khỏi đánh giá nhiều năm.
-- LSTM, GRU và Transformer đã có model code dạng tùy chọn. Cài PyTorch bằng `requirements-dl.txt` trước khi chọn các model này; chúng không được ghi nhận là đã có forecast result cho tới khi chạy xong full walk-forward.
-- Bài kiểm tra chạy bằng `& $PY -m pytest -c backend\pytest.ini backend\tests --basetemp .pytest-tmp`. CI tự chạy test trên Python 3.11.
-- `data/`, model files và kết quả Parquet lớn không commit. Chỉ commit code, cấu hình và báo cáo nhỏ đã rà soát.
+Các quy tắc sequence dựa trên [tài liệu WebSocket Streams chính thức của Binance](https://github.com/binance/binance-spot-api-docs/blob/master/web-socket-streams.md); REST snapshot theo [Spot REST API](https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md).
+
+## Không commit dữ liệu thị trường
+
+Raw JSONL, Parquet, checkpoint, logs và kết quả lớn nằm ngoài Git qua `.gitignore`. Chỉ commit code, cấu hình và tài liệu đã rà soát. Có thể xem quy ước field tại [data_dictionary.md](docs/data_dictionary.md), định nghĩa mục tiêu tại [methodology.md](docs/methodology.md) và phạm vi nghiên cứu tại [research_design.md](docs/research_design.md).
+
+Các script/module OHLCV và tài liệu Tail-Risk dashboard cũ còn trong workspace để lưu dấu công việc trước đây; các lệnh pipeline OHLCV đã bị tắt, và chúng không được API LOB hiện hành gọi. Entry frontend hiện tại là `frontend/src/LOBApp.tsx`; các trang dashboard cũ không được nạp.
