@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from app.core.config import Settings
 from app.evaluation.lob_classification import paired_classification_tests
@@ -11,7 +12,7 @@ from app.labels.stress import (
     make_spread_only_labels,
     monthly_positive_rates,
 )
-from app.models.deeplob_classifier import DEEPLOB_INPUT_COLUMNS, build_lob_sequences
+from app.models.deeplob_classifier import DEEPLOB_INPUT_COLUMNS, DeepLOBClassifier, build_lob_sequences
 from scripts.build_lob_classification_dataset import build_partition_features
 
 
@@ -103,19 +104,37 @@ def test_deeplob_price_channels_are_normalized_to_each_snapshot_mid():
     assert endpoints.tolist() == [1]
 
 
-def test_paired_mcnemar_and_horizon_adjusted_brier_dm_are_returned():
-    truth = np.asarray([0, 1, 2, 0, 1, 2])
-    prediction = np.asarray([0, 1, 1, 0, 2, 2])
-    baseline = np.asarray([1, 1, 2, 0, 1, 0])
-    probability = np.eye(3)[np.asarray([0, 1, 1, 0, 2, 2])]
-    baseline_probability = np.eye(3)[baseline]
+def test_paired_mcnemar_and_minute_blocked_brier_dm_are_returned():
+    rng = np.random.default_rng(19)
+    truth = rng.integers(0, 3, size=3600)
+    prediction = rng.integers(0, 3, size=3600)
+    baseline = rng.integers(0, 3, size=3600)
+    probability = np.eye(3)[prediction] * 0.8 + 0.2 / 3
+    baseline_probability = np.eye(3)[baseline] * 0.8 + 0.2 / 3
+    timestamps = pd.date_range("2026-11-23T00:00:00Z", periods=len(truth), freq="s")
     result = paired_classification_tests(
         truth, prediction, baseline, probability, baseline_probability,
-        horizon_seconds=5, baseline_name="logistic",
+        horizon_seconds=5, baseline_name="logistic", timestamps=timestamps,
     )
     assert result["baseline"] == "logistic"
     assert result["mcnemar"]["p_value_exact_two_sided"] >= 0
-    assert result["diebold_mariano_brier"]["hac_lags"] == 4
+    assert result["diebold_mariano_brier"]["n_blocks"] == 60
+    assert result["diebold_mariano_brier"]["hac_lag_unit"] == "minutes"
+    assert result["diebold_mariano_brier"]["hac_lags"] >= 10
+
+
+def test_deeplob_torch_fit_predict_proba_smoke():
+    pytest.importorskip("torch")
+    rng = np.random.default_rng(2026)
+    x = rng.normal(size=(60, 4, 40)).astype(np.float32)
+    y = np.asarray([0, 1] * 30)
+    model = DeepLOBClassifier(
+        lookback=4, hidden_size=8, batch_size=16, max_epochs=1, patience=1,
+    ).fit(x, y)
+    probabilities = model.predict_proba(x[:8])
+    assert probabilities.shape == (8, 2)
+    assert np.isfinite(probabilities).all()
+    assert np.allclose(probabilities.sum(axis=1), 1.0)
 
 
 def test_vector_price_impact_is_missing_if_one_book_side_cannot_fill_notional():

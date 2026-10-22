@@ -18,11 +18,10 @@ from sklearn.isotonic import IsotonicRegression
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.core.config import REPOSITORY_ROOT, load_settings
-from app.evaluation.lob_classification import classification_metrics, paired_classification_tests
+from app.evaluation.lob_classification import classification_metrics, expanding_week_folds, paired_classification_tests
 from app.labels.direction import fit_direction_delta, make_direction_labels
 from app.labels.stress import (
     fit_primary_stress_thresholds,
-    fit_stress_thresholds,
     make_stress_labels,
     monthly_positive_rates,
 )
@@ -225,9 +224,9 @@ def _fit_final(task: str, name: str, x: pd.DataFrame, y: pd.Series, max_train_ro
 def _collect_selected_oos(task: str, model_name: str, frame: pd.DataFrame, times: pd.Series, horizon: int, delta: float, embargo_seconds: int, max_train_rows: int, folds: tuple[str, ...], stress_quantile: float, stress_depth_quantile: float, stress_definition: str = "spread_only"):
     class_order = DIRECTION_CLASSES if task == "direction" else STRESS_CLASSES
     truth_parts, probability_parts = [], []
-    for month in folds:
-        start = pd.Timestamp(f"{month}-01T00:00:00Z")
-        end = start + pd.offsets.MonthBegin(1)
+    for week in folds:
+        start = pd.Timestamp(f"{week}T00:00:00Z")
+        end = start + pd.Timedelta(days=7)
         cutoff = start - pd.Timedelta(seconds=embargo_seconds)
         if task == "direction":
             labels = make_direction_labels(frame, horizon, delta)
@@ -294,19 +293,23 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
     times = pd.to_datetime(frame["timestamp_utc"], utc=True)
     test_start = pd.Timestamp(settings.lob_untouched_test_start_utc)
     test_end = pd.Timestamp(settings.lob_untouched_test_end_utc) + pd.Timedelta(seconds=1)
-    development_end = pd.Timestamp(settings.lob_development_end_utc)
-    folds = tuple(str(month) for month in pd.period_range(settings.lob_first_validation_month, development_end.to_period("M"), freq="M"))
+    folds = expanding_week_folds(settings.lob_first_validation_week_utc, settings.lob_development_end_utc)
     if not folds:
-        raise RuntimeError("No walk-forward validation months are configured")
+        raise RuntimeError("No full weekly walk-forward validation folds are configured")
     dev_cutoff = test_start - pd.Timedelta(seconds=embargo_seconds)
-    first_cutoff = pd.Timestamp(f"{folds[0]}-01T00:00:00Z") - pd.Timedelta(seconds=embargo_seconds)
+    first_cutoff = pd.Timestamp(f"{folds[0]}T00:00:00Z") - pd.Timedelta(seconds=embargo_seconds)
     first_train = frame.loc[times < first_cutoff].copy()
     if first_train.empty:
-        raise RuntimeError(f"Insufficient data before {folds[0]} for the first training fold")
+        raise RuntimeError(f"Insufficient data before validation week {folds[0]} for the first training fold")
 
     result: dict[str, object] = {"symbol": symbol, "data_rows": int(len(frame)), "horizons": {}}
     test_columns = ["timestamp_utc", "mid_price", *LOB_CLASSIFICATION_FEATURES]
     test_slice = frame.loc[(times >= test_start) & (times < test_end), test_columns]
+    if test_slice.empty:
+        raise RuntimeError(
+            f"No data exists in the frozen final-test week {settings.lob_untouched_test_start_utc[:10]}"
+            f" through {settings.lob_untouched_test_end_utc[:10]}; collect the configured capture window first"
+        )
     result["final_test_scored_once"] = True
     result["final_test_data_sha256"] = hashlib.sha256(
         pd.util.hash_pandas_object(test_slice, index=False).values.tobytes()
@@ -321,9 +324,9 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
         delta_sensitivity_metrics, level_sensitivity_metrics = [], []
         delta_quantiles = sorted({max(0.1, settings.lob_direction_delta_quantile - 0.1), settings.lob_direction_delta_quantile, min(0.9, settings.lob_direction_delta_quantile + 0.1)})
 
-        for month in folds:
-            validation_start = pd.Timestamp(f"{month}-01T00:00:00Z")
-            validation_end = validation_start + pd.offsets.MonthBegin(1)
+        for week in folds:
+            validation_start = pd.Timestamp(f"{week}T00:00:00Z")
+            validation_end = validation_start + pd.Timedelta(days=7)
             train_end = validation_start - pd.Timedelta(seconds=embargo_seconds)
             train_mask = (times < train_end) & direction_labels.notna()
             valid_mask = (
@@ -337,7 +340,7 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
                 settings.lob_stress_quantile,
                 settings.lob_stress_depth_quantile,
             )
-            stress_threshold_history.append({"validation_month": month, **stress_thresholds.as_dict()})
+            stress_threshold_history.append({"validation_week_utc": week, **stress_thresholds.as_dict()})
             stress_labels = make_stress_labels(frame, horizon, stress_thresholds)
             stress_train_mask = (times < train_end) & stress_labels.notna()
             stress_valid_mask = (
@@ -359,7 +362,7 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
                     yv_direction.to_numpy(), np.repeat(majority, len(yv_direction)), baseline_probability,
                     labels=list(DIRECTION_CLASSES), stress=False,
                 )
-                direction_fold_metrics.append({"month": month, "model": "class_frequency", **baseline_metrics})
+                direction_fold_metrics.append({"week_utc": week, "model": "class_frequency", **baseline_metrics})
                 persistence_prediction = _direction_persistence_predictions(frame.loc[valid_mask], delta)
                 persistence_probability = np.column_stack([
                     persistence_prediction == label for label in DIRECTION_CLASSES
@@ -368,10 +371,10 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
                     yv_direction.to_numpy(), persistence_prediction, persistence_probability,
                     labels=list(DIRECTION_CLASSES), stress=False,
                 )
-                direction_fold_metrics.append({"month": month, "model": "direction_persistence", **persistence_metrics})
+                direction_fold_metrics.append({"week_utc": week, "model": "direction_persistence", **persistence_metrics})
             for name, values in dscores.items():
                 direction_scores.setdefault(name, []).extend(values)
-                direction_fold_metrics.append({"month": month, "model": name, **values[-1]})
+                direction_fold_metrics.append({"week_utc": week, "model": name, **values[-1]})
             obi_only = ("obi_qty_1", "obi_qty_5", "obi_qty_10", "obi_qty_20")
             obi_plus_ofi = (*obi_only, "ofi_1s", "ofi_5s", "ofi_10s")
             for comparison_name, columns in (("logistic_obi_only", obi_only), ("logistic_obi_plus_ofi", obi_plus_ofi)):
@@ -385,7 +388,7 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
                         yv_direction.to_numpy(), comparison_prediction, comparison_probabilities,
                         labels=list(DIRECTION_CLASSES), stress=False,
                     )
-                    direction_fold_metrics.append({"month": month, "model": comparison_name, **comparison_metrics})
+                    direction_fold_metrics.append({"week_utc": week, "model": comparison_name, **comparison_metrics})
 
             # δ sensitivity is fitted from the first training segment only;
             # each variant then uses the same expanding walk-forward folds.
@@ -404,7 +407,7 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
                 xv = frame.loc[variant_valid, LOB_CLASSIFICATION_FEATURES]
                 pred = comparator.predict(xv)
                 prob = _align_probabilities(comparator, xv, DIRECTION_CLASSES)
-                delta_sensitivity_metrics.append({"month": month, "delta_quantile": float(quantile), "delta": float(delta_variant), **classification_metrics(variant_yv.to_numpy(), pred, prob, labels=list(DIRECTION_CLASSES))})
+                delta_sensitivity_metrics.append({"week_utc": week, "delta_quantile": float(quantile), "delta": float(delta_variant), **classification_metrics(variant_yv.to_numpy(), pred, prob, labels=list(DIRECTION_CLASSES))})
 
             # L sensitivity keeps the classifier fixed and varies the static
             # depth imbalance lookback, for every requested forecast horizon.
@@ -418,7 +421,7 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
                 xv = xv_direction.loc[:, [column]]
                 pred = comparator.predict(xv)
                 prob = _align_probabilities(comparator, xv, DIRECTION_CLASSES)
-                level_sensitivity_metrics.append({"month": month, "depth_levels_L": depth, **classification_metrics(yv_direction.to_numpy(), pred, prob, labels=list(DIRECTION_CLASSES))})
+                level_sensitivity_metrics.append({"week_utc": week, "depth_levels_L": depth, **classification_metrics(yv_direction.to_numpy(), pred, prob, labels=list(DIRECTION_CLASSES))})
 
             x_stress = frame.loc[stress_train_mask, LOB_CLASSIFICATION_FEATURES]
             xv_stress = frame.loc[stress_valid_mask, LOB_CLASSIFICATION_FEATURES]
@@ -432,10 +435,10 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
                     np.column_stack([1 - persistent, persistent]),
                     labels=list(STRESS_CLASSES), stress=True,
                 )
-                stress_fold_metrics.append({"month": month, "model": "stress_persistence", **persistence_metrics})
+                stress_fold_metrics.append({"week_utc": week, "model": "stress_persistence", **persistence_metrics})
             for name, values in sscores.items():
                 stress_scores.setdefault(name, []).extend(values)
-                stress_fold_metrics.append({"month": month, "model": name, **values[-1]})
+                stress_fold_metrics.append({"week_utc": week, "model": name, **values[-1]})
 
         direction_name = _select_model("direction", direction_scores)
         stress_name = _select_model("stress", stress_scores)
@@ -482,7 +485,7 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
         direction_pairwise = paired_classification_tests(
             y_test.to_numpy(), direction_prediction_calibrated, direction_persistence_test,
             direction_probability, direction_persistence_probability,
-            stress=False, horizon_seconds=horizon,
+            stress=False, horizon_seconds=horizon, timestamps=times.loc[test_mask],
         )
 
         xs_train = frame.loc[stress_train_mask, LOB_CLASSIFICATION_FEATURES]
@@ -495,7 +498,7 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
         if not np.isfinite(stress_train_positive_rate) or not prevalence_min <= stress_train_positive_rate <= prevalence_max:
             raise RuntimeError(
                 f"{symbol} h={horizon}: development stress-label prevalence {stress_train_positive_rate:.4f} "
-                f"is outside [{prevalence_min:.2%}, {prevalence_max:.2%}]; revise the train-only label definition before scoring December"
+                f"is outside [{prevalence_min:.2%}, {prevalence_max:.2%}]; revise the train-only label definition before scoring the frozen test week"
             )
         stress_model = _fit_final("stress", stress_name, xs_train, ys_train, max_train_rows)
         stress_probability_raw = _align_probabilities(stress_model, xs_test, STRESS_CLASSES)
@@ -524,50 +527,51 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
         stress_pairwise = paired_classification_tests(
             ys_test.to_numpy(), stress_prediction, stress_persistence_test,
             np.column_stack([1.0 - stress_probability, stress_probability]), stress_persistence_probability,
-            stress=True, horizon_seconds=horizon,
+            stress=True, horizon_seconds=horizon, timestamps=times.loc[stress_test_mask],
         )
-        composite_thresholds = fit_stress_thresholds(
-            _stress_threshold_rows(frame, times < dev_cutoff, "composite"),
-            upper_quantile=0.975,
-            depth_quantile=0.025,
+        spread_sensitivity_thresholds = fit_primary_stress_thresholds(
+            _stress_threshold_rows(frame, times < dev_cutoff, "spread_only"),
+            "spread_only",
+            settings.lob_spread_sensitivity_quantile,
+            settings.lob_stress_depth_quantile,
         )
-        composite_labels = make_stress_labels(frame, horizon, composite_thresholds)
-        composite_train_mask = (times < dev_cutoff) & composite_labels.notna()
-        composite_test_mask = (times >= test_start) & (times < test_end - pd.Timedelta(seconds=horizon)) & composite_labels.notna()
-        composite_train_y = composite_labels.loc[composite_train_mask].astype(int)
-        composite_test_y = composite_labels.loc[composite_test_mask].astype(int)
-        composite_sensitivity: dict[str, object] = {
+        spread_sensitivity_labels = make_stress_labels(frame, horizon, spread_sensitivity_thresholds)
+        spread_sensitivity_train_mask = (times < dev_cutoff) & spread_sensitivity_labels.notna()
+        spread_sensitivity_test_mask = (times >= test_start) & (times < test_end - pd.Timedelta(seconds=horizon)) & spread_sensitivity_labels.notna()
+        spread_sensitivity_train_y = spread_sensitivity_labels.loc[spread_sensitivity_train_mask].astype(int)
+        spread_sensitivity_test_y = spread_sensitivity_labels.loc[spread_sensitivity_test_mask].astype(int)
+        spread_sensitivity: dict[str, object] = {
             "status": "unavailable",
-            "definition": "composite_spread_impact_depth_rv",
-            "thresholds_train": composite_thresholds.as_dict(),
+            "definition": f"spread_only_train_q{settings.lob_spread_sensitivity_quantile * 100:g}_sensitivity",
+            "thresholds_train": spread_sensitivity_thresholds.as_dict(),
             "positive_rate_by_month_development": monthly_positive_rates(
-                composite_labels.loc[times < dev_cutoff], times.loc[times < dev_cutoff]
+                spread_sensitivity_labels.loc[times < dev_cutoff], times.loc[times < dev_cutoff]
             ),
             "positive_rate_by_month_test": monthly_positive_rates(
-                composite_labels.loc[composite_test_mask], times.loc[composite_test_mask]
+                spread_sensitivity_labels.loc[spread_sensitivity_test_mask], times.loc[spread_sensitivity_test_mask]
             ),
         }
-        if composite_train_y.nunique() == 2 and not composite_test_y.empty:
-            composite_model = _fit_final(
+        if spread_sensitivity_train_y.nunique() == 2 and not spread_sensitivity_test_y.empty:
+            spread_sensitivity_model = _fit_final(
                 "stress", stress_name,
-                frame.loc[composite_train_mask, LOB_CLASSIFICATION_FEATURES],
-                composite_train_y,
+                frame.loc[spread_sensitivity_train_mask, LOB_CLASSIFICATION_FEATURES],
+                spread_sensitivity_train_y,
                 max_train_rows,
             )
-            composite_x_test = frame.loc[composite_test_mask, LOB_CLASSIFICATION_FEATURES]
-            composite_probability = _align_probabilities(composite_model, composite_x_test, STRESS_CLASSES)
-            composite_prediction = (composite_probability[:, 1] >= 0.5).astype(int)
-            composite_sensitivity.update({
+            spread_sensitivity_x_test = frame.loc[spread_sensitivity_test_mask, LOB_CLASSIFICATION_FEATURES]
+            spread_sensitivity_probability = _align_probabilities(spread_sensitivity_model, spread_sensitivity_x_test, STRESS_CLASSES)
+            spread_sensitivity_prediction = (spread_sensitivity_probability[:, 1] >= 0.5).astype(int)
+            spread_sensitivity.update({
                 "status": "scored",
                 "test_metrics": classification_metrics(
-                    composite_test_y.to_numpy(), composite_prediction,
-                    composite_probability, labels=list(STRESS_CLASSES), stress=True,
+                    spread_sensitivity_test_y.to_numpy(), spread_sensitivity_prediction,
+                    spread_sensitivity_probability, labels=list(STRESS_CLASSES), stress=True,
                 ),
             })
-        elif composite_train_y.nunique() < 2:
-            composite_sensitivity["reason"] = "Composite train-only thresholds produced a single class; extension label is degenerate"
+        elif spread_sensitivity_train_y.nunique() < 2:
+            spread_sensitivity["reason"] = "Spread-only train thresholds produced a single class; sensitivity label is degenerate"
         else:
-            composite_sensitivity["reason"] = "No valid untouched-test composite labels are available"
+            spread_sensitivity["reason"] = "No valid untouched-test spread-only labels are available"
         regime_training_rv = pd.to_numeric(frame.loc[times < dev_cutoff, "rv_300s"], errors="coerce").dropna()
         if len(regime_training_rv) and regime_training_rv.quantile(1 / 3) < regime_training_rv.quantile(2 / 3):
             regime_cutoffs = [float(regime_training_rv.quantile(1 / 3)), float(regime_training_rv.quantile(2 / 3))]
@@ -659,7 +663,7 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
             "stress_test": stress_test_metrics,
             "stress_test_raw": stress_test_metrics_raw,
             "stress_paired_tests_vs_persistence": stress_pairwise,
-            "stress_composite_sensitivity": composite_sensitivity,
+            "stress_spread_only_sensitivity": spread_sensitivity,
             "stress_decision_threshold": stress_threshold,
             "stress_decision_threshold_raw": stress_threshold_raw,
             "regime_cutoffs_rv_300s_train_terciles": regime_cutoffs,
@@ -681,7 +685,7 @@ def main() -> int:
     parser.add_argument("--horizon", type=int, choices=(1, 5, 10))
     parser.add_argument("--embargo-seconds", type=int)
     parser.add_argument("--max-train-rows", type=int, default=250000, help="Deterministic class-stratified cap for each model fit")
-    parser.add_argument("--allow-repeat-final-test", action="store_true", help="Explicitly allow scoring December again after a prior run")
+    parser.add_argument("--allow-repeat-final-test", action="store_true", help="Explicitly allow scoring the frozen final-test week again after a prior run")
     args = parser.parse_args()
     settings = load_settings()
     embargo_seconds = args.embargo_seconds if args.embargo_seconds is not None else settings.lob_embargo_seconds

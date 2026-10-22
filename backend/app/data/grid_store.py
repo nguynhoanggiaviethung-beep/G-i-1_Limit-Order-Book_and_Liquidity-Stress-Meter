@@ -85,6 +85,7 @@ class GridStore:
                 "expected_seconds": self._sum_optional(partitions, "expected_seconds"),
                 "dropped_seconds": self._sum_optional(partitions, "dropped_seconds"),
                 "sequence_gap_count": self._sum_optional(partitions, "sequence_gap_count"),
+                "invalid_book_event_count": self._sum_optional(partitions, "invalid_book_event_count"),
                 "snapshot_bootstraps": self._sum_optional(partitions, "snapshot_bootstraps"),
                 "snapshot_recoveries": self._sum_optional(partitions, "snapshot_recoveries"),
                 "qa_available": bool(partitions) and all(item.get("qa_available", False) for item in partitions),
@@ -136,13 +137,14 @@ class GridStore:
                         "expected_seconds": payload.get("expected_seconds"),
                         "dropped_seconds": payload.get("dropped_seconds"),
                         "sequence_gap_count": payload.get("sequence_gap_count"),
+                        "invalid_book_event_count": payload.get("invalid_book_event_count"),
                         "snapshot_bootstraps": payload.get("snapshot_bootstraps"),
                         "snapshot_recoveries": payload.get("snapshot_recoveries"),
                         "coverage": payload.get("coverage"),
                     }
                 except (OSError, json.JSONDecodeError, TypeError):
                     break
-        return {"qa_available": False, "valid_seconds": None, "expected_seconds": None, "dropped_seconds": None, "sequence_gap_count": None, "snapshot_bootstraps": None, "snapshot_recoveries": None, "coverage": None}
+        return {"qa_available": False, "valid_seconds": None, "expected_seconds": None, "dropped_seconds": None, "sequence_gap_count": None, "invalid_book_event_count": None, "snapshot_bootstraps": None, "snapshot_recoveries": None, "coverage": None}
 
     def read(
         self,

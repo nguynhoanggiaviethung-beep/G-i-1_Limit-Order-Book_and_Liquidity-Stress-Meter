@@ -34,9 +34,12 @@ lob:
   primary_horizon_seconds: 5
   depth_levels: 20
   direction_delta_quantile: 0.5
-  stress_definition: spread_only
-  stress_quantile: 0.95
+  # Composite stress combines upper spread/impact/RV tails and low depth.
+  # It avoids a degenerate label when spread_ticks has a large point mass at one tick.
+  stress_definition: composite
+  stress_quantile: 0.975
   stress_depth_quantile: 0.025
+  spread_sensitivity_quantile: 0.95
   stress_min_positive_rate: 0.02
   stress_max_positive_rate: 0.10
   stress_impact_notional_by_symbol:
@@ -47,10 +50,13 @@ lob:
     ETHUSDT: 0.01
   max_missing_feature_fraction: 0.10
   max_staleness_seconds: 2
-  first_validation_month: "2025-08"
-  development_end_utc: "2025-11-30T23:59:59Z"
-  untouched_test_start_utc: "2025-12-01T00:00:00Z"
-  untouched_test_end_utc: "2025-12-31T23:59:59Z"
+  # Freeze collection and evaluation to full UTC weeks. Validation runs weekly;
+  # the last full week is held out once after model selection.
+  first_validation_week_utc: "2026-11-02T00:00:00Z"
+  development_end_utc: "2026-11-22T23:59:59Z"
+  untouched_test_start_utc: "2026-11-23T00:00:00Z"
+  untouched_test_end_utc: "2026-11-29T23:59:59Z"
   embargo_seconds: 300
   feature_lookback_seconds: 300
   deeplob_lookback_seconds: 100
+  deeplob_max_train_rows: 8000

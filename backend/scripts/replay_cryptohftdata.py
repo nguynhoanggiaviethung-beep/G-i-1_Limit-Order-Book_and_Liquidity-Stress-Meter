@@ -84,7 +84,11 @@ def _write_day(output_root: Path, symbol: str, day: str, rows: list[dict], qa: d
     temporary_qa = qa_path.with_suffix(".json.tmp")
     temporary_qa.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     os.replace(temporary_qa, qa_path)
-    print(f"{symbol} {day}: {valid:,}/{expected:,} seconds valid, {qa.get('sequence_gap_count', 0)} sequence gaps")
+    print(
+        f"{symbol} {day}: {valid:,}/{expected:,} seconds valid, "
+        f"{qa.get('sequence_gap_count', 0)} sequence gaps, "
+        f"{qa.get('invalid_book_event_count', 0)} invalid-book events"
+    )
 
 
 def main() -> int:

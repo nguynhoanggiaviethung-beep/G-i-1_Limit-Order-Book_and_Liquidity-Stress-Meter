@@ -39,3 +39,17 @@ def test_sequence_gap_invalidates_samples_until_new_snapshot():
     assert qa["dropped_seconds"] == 1
     assert qa["snapshot_bootstraps"] == 1
     assert qa["snapshot_recoveries"] == 1
+
+
+def test_invalid_book_update_is_not_counted_as_sequence_gap():
+    events = [
+        {"kind": "snapshot", "event_time_ms": 900, "lastUpdateId": 10, "bids": [["100", "1"]], "asks": [["101", "1"]]},
+        {"kind": "depth_update", "E": 1000, "U": 11, "u": 11, "b": [["102", "1"]], "a": []},
+        {"kind": "snapshot", "event_time_ms": 2000, "lastUpdateId": 20, "bids": [["100", "1"]], "asks": [["101", "1"]]},
+    ]
+
+    rows, qa = replay_event_records(events, "BTCUSDT", tick_size=0.01, levels=1)
+
+    assert len(rows) == 1
+    assert qa["sequence_gap_count"] == 0
+    assert qa["invalid_book_event_count"] == 1

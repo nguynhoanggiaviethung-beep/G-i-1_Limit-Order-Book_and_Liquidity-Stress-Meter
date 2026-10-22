@@ -51,7 +51,7 @@ Records must be ordered by exchange event time. A snapshot bootstraps the book; 
 
 Rows are omitted when no valid book is available or the last update is older than two seconds. Do not fill missing seconds.
 
-Per-day QA sidecars are read from `outputs/manifests/symbol=<SYMBOL>/date=YYYY-MM-DD/qa.json` or an adjacent `book_1s.qa.json`. They report `valid_seconds`, `expected_seconds`, `dropped_seconds`, `sequence_gap_count`, `snapshot_bootstraps`, `snapshot_recoveries`, and `coverage`. `GET /api/v1/data-status` reports these totals when sidecars are present; missing QA remains explicitly unavailable.
+Per-day QA sidecars are read from `outputs/manifests/symbol=<SYMBOL>/date=YYYY-MM-DD/qa.json` or an adjacent `book_1s.qa.json`. They report `valid_seconds`, `expected_seconds`, `dropped_seconds`, `sequence_gap_count`, `invalid_book_event_count`, `snapshot_bootstraps`, `snapshot_recoveries`, and `coverage`. Sequence gaps and structurally invalid book updates use separate counters because invalid updates invalidate the book but do not imply a missing sequence range. `GET /api/v1/data-status` reports these totals when sidecars are present; missing QA remains explicitly unavailable.
 
 ## Derived point-in-time features
 
@@ -59,7 +59,7 @@ Per-day QA sidecars are read from `outputs/manifests/symbol=<SYMBOL>/date=YYYY-M
 |---|---|
 | `mid_price` | `(best_ask + best_bid) / 2`. |
 | `absolute_spread`, `relative_spread_bps` | Ask minus bid; spread divided by mid and multiplied by 10,000. |
-| `spread_ticks` | Absolute spread divided by the configured symbol tick size. The stress label uses this metric when available. |
+| `spread_ticks` | Absolute spread divided by the configured symbol tick size. The composite stress label uses this metric when available. |
 | `microprice`, `microprice_minus_mid_bps` | Opposite-side quantity-weighted quote and its offset from mid. |
 | `bid_depth_qty_L`, `ask_depth_qty_L`, `depth_qty_L` | Bid, ask, and combined quantity through level L. |
 | `bid_depth_notional_L`, `ask_depth_notional_L`, `depth_notional_L` | Bid, ask, and combined USDT notional through level L. |
@@ -75,6 +75,6 @@ All rolling windows reset at gaps. Every scaler, imputer, and threshold is fitte
 
 ## Target and result fields
 
-Direction targets are `up`, `flat`, or `down` at 1, 5, and 10 second horizons. The primary stress target is binary: future spread exceeds the training-fold Q95, with `spread_ticks` preferred when present. A composite spread/impact/depth/RV label is a separately identified extension. Store `target_end_utc`, `target_valid`, the stress definition, and the threshold version with every label dataset.
+Direction targets are `up`, `flat`, or `down` at 1, 5, and 10 second horizons. The primary stress target is binary composite stress: future spread, price impact, or RV exceeds its training-fold Q97.5, or future top-10 depth falls below its training-fold Q2.5. Spread-only Q95 remains a sensitivity because discrete tick spreads may yield too few positive labels. Store `target_end_utc`, `target_valid`, the stress definition, and the threshold version with every label dataset.
 
 The meter response contains `timestamp_utc`, `horizon_seconds`, `spread`, imbalance at L=1/5/10/20, `ofi_5s`, `p_up`, `p_flat`, `p_down`, `p_stress`, `model_version`, and `quality`. Probability fields are null when the matching trained artifact is unavailable.

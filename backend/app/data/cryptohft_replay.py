@@ -81,7 +81,8 @@ class OneSecondBookReplay:
         self._reset_bucket()
         self.qa = {
             "expected_seconds": 0, "valid_seconds": 0, "dropped_seconds": 0,
-            "sequence_gap_count": 0, "snapshot_bootstraps": 0, "snapshot_recoveries": 0,
+            "sequence_gap_count": 0, "invalid_book_event_count": 0,
+            "snapshot_bootstraps": 0, "snapshot_recoveries": 0,
             "event_time_order_adjustments": 0, "max_event_time_lateness_ms": 0,
         }
         self.daily_qa: dict[str, dict[str, int]] = {}
@@ -92,7 +93,8 @@ class OneSecondBookReplay:
         day = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).date().isoformat()
         return self.daily_qa.setdefault(day, {
             "expected_seconds": 0, "valid_seconds": 0, "dropped_seconds": 0,
-            "sequence_gap_count": 0, "snapshot_bootstraps": 0, "snapshot_recoveries": 0,
+            "sequence_gap_count": 0, "invalid_book_event_count": 0,
+            "snapshot_bootstraps": 0, "snapshot_recoveries": 0,
             "event_time_order_adjustments": 0, "max_event_time_lateness_ms": 0,
         })
 
@@ -238,9 +240,8 @@ class OneSecondBookReplay:
             self.last_gap_second = self.current_second
             self.book = None
         except (InvalidBook, KeyError, TypeError, ValueError):
-            self.qa["sequence_gap_count"] += 1
-            self._daily_counter(self.current_second)["sequence_gap_count"] += 1
-            self.last_gap_second = self.current_second
+            self.qa["invalid_book_event_count"] += 1
+            self._daily_counter(self.current_second)["invalid_book_event_count"] += 1
             self.book = None
 
     def _apply_trade(self, event: dict[str, Any]) -> None:

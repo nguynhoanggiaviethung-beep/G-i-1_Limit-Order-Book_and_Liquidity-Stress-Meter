@@ -28,12 +28,15 @@ def paired_classification_tests(
     stress: bool = False,
     horizon_seconds: int = 1,
     baseline_name: str = "persistence",
+    timestamps=None,
 ) -> dict[str, Any]:
-    """Compare two paired forecasts with exact McNemar and HAC DM tests.
+    """Compare paired forecasts with exact McNemar and minute-blocked HAC DM.
 
-    DM uses Brier loss and a Bartlett/Newey-West long-run variance with
-    ``horizon_seconds - 1`` lags to account for overlapping forecast targets.
-    A positive mean difference means ``prediction`` has larger Brier loss.
+    Brier-loss differences are averaged by UTC minute before inference, then
+    use an automatic Newey-West bandwidth with a ten-minute minimum. The
+    bandwidth therefore accounts for multi-minute error dependence as well
+    as the short overlap induced by the forecast horizon. A positive mean
+    difference means ``prediction`` has larger Brier loss.
     """
     truth = np.asarray(y_true)
     predicted = np.asarray(prediction)
@@ -71,24 +74,47 @@ def paired_classification_tests(
         baseline_loss = np.sum((p0 - one_hot) ** 2, axis=1)
 
     difference = model_loss - baseline_loss
-    n = len(difference)
-    mean_difference = float(np.mean(difference))
-    centered = difference - mean_difference
-    max_lag = min(max(int(horizon_seconds) - 1, 0), n - 1)
-    long_run_variance = float(np.dot(centered, centered) / n)
+    if timestamps is None:
+        time_index = pd.date_range("2000-01-01", periods=len(difference), freq="s", tz="UTC")
+    else:
+        if len(timestamps) != len(difference):
+            raise ValueError("timestamps must have the same length as paired predictions")
+        time_index = pd.DatetimeIndex(pd.to_datetime(timestamps, utc=True, errors="coerce"))
+        if time_index.isna().any():
+            raise ValueError("timestamps must contain valid UTC times")
+    raw_count = len(difference)
+    minute_values = pd.Series(difference, index=time_index).groupby(time_index.floor("min")).mean()
+    minute_keys = (minute_values.index.asi8 // (60 * 1_000_000_000)).astype(np.int64)
+    block_loss = minute_values.to_numpy(dtype=float)
+    n_blocks = len(block_loss)
+    mean_difference = float(np.mean(block_loss))
+    centered = block_loss - mean_difference
+    # Andrews/Newey-West plug-in bandwidth, with a ten-minute floor for
+    # short-horizon LOB loss series and a gap-aware minute-lag covariance.
+    automatic_lag = int(np.floor(4 * (n_blocks / 100.0) ** (2.0 / 9.0))) if n_blocks else 0
+    max_lag = min(max(10, automatic_lag, int(np.ceil(max(horizon_seconds - 1, 0) / 60))), max(n_blocks - 1, 0))
+    long_run_variance = float(np.dot(centered, centered) / n_blocks) if n_blocks else 0.0
+    positions_by_minute = {int(minute): index for index, minute in enumerate(minute_keys)}
     for lag in range(1, max_lag + 1):
+        products = [
+            centered[position] * centered[positions_by_minute[int(minute) - lag]]
+            for position, minute in enumerate(minute_keys)
+            if int(minute) - lag in positions_by_minute
+        ]
+        if not products:
+            continue
         weight = 1.0 - lag / (max_lag + 1.0)
-        autocovariance = float(np.dot(centered[lag:], centered[:-lag]) / n)
+        autocovariance = float(np.sum(products) / n_blocks)
         long_run_variance += 2.0 * weight * autocovariance
     long_run_variance = max(long_run_variance, 0.0)
-    if long_run_variance > 0:
-        dm_stat = float(mean_difference / np.sqrt(long_run_variance / n))
+    if long_run_variance > 0 and n_blocks >= 30:
+        dm_stat = float(mean_difference / np.sqrt(long_run_variance / n_blocks))
         dm_p = float(2 * norm.sf(abs(dm_stat)))
     else:
         dm_stat = None
         dm_p = None
     return {
-        "n": int(n),
+        "n": int(raw_count),
         "baseline": baseline_name,
         "mcnemar": {
             "model_only_correct": model_only,
@@ -99,6 +125,10 @@ def paired_classification_tests(
         "diebold_mariano_brier": {
             "mean_loss_difference_model_minus_baseline": mean_difference,
             "hac_lags": max_lag,
+            "hac_lag_unit": "minutes",
+            "block_duration_seconds": 60,
+            "n_blocks": int(n_blocks),
+            "minimum_blocks_for_p_value": 30,
             "statistic": dm_stat,
             "p_value_two_sided_normal": dm_p,
         },
@@ -186,6 +216,25 @@ def expanding_month_folds(timestamps: pd.Series, first_validation_month: str = "
         validation = months == month
         train = months < month
         yield month, train.to_numpy(), validation.to_numpy()
+
+
+def expanding_week_folds(first_validation_week_utc: str, development_end_utc: str) -> tuple[str, ...]:
+    """Return full UTC Monday-to-Sunday validation weeks before the test week."""
+    first = pd.Timestamp(first_validation_week_utc)
+    development_end = pd.Timestamp(development_end_utc)
+    if first.tzinfo is None or development_end.tzinfo is None:
+        raise ValueError("Weekly split timestamps must include a UTC offset")
+    first = first.tz_convert("UTC")
+    development_end = development_end.tz_convert("UTC")
+    if first.weekday() != 0 or first != first.normalize():
+        raise ValueError("First validation week must start Monday 00:00 UTC")
+    development_exclusive = development_end + pd.Timedelta(seconds=1)
+    if development_exclusive.weekday() != 0 or development_exclusive != development_exclusive.normalize():
+        raise ValueError("Development must end on Sunday 23:59:59 UTC")
+    last_full_week = development_exclusive - pd.Timedelta(days=7)
+    if first > last_full_week:
+        return ()
+    return tuple(pd.date_range(first, last_full_week, freq="7D").strftime("%Y-%m-%d"))
 
 
 def apply_embargo(train_mask: np.ndarray, timestamps: pd.Series, validation_start: pd.Timestamp, seconds: int) -> np.ndarray:
