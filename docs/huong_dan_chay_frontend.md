@@ -70,6 +70,7 @@ Lần sau, nếu package đã cài rồi, chỉ cần chạy `npm run dev`. Gi�
 3. Chờ backend đồng bộ book. Nếu kết nối bị gián đoạn hoặc sequence bị lỗi, dashboard báo trạng thái và collector tự kết nối/đồng bộ lại.
 4. Các xác suất chỉ khả dụng khi có model tương thích và đủ dữ liệu rolling liên tục (tối đa 5 phút). Sau khi mất kết nối hoặc dựng lại book, thời gian warm-up bắt đầu lại.
 5. Chọn chế độ **replay** nếu muốn xem dữ liệu đã lưu. Khoảng ngày replay chỉ áp dụng cho dữ liệu đã capture/replay, không thể tạo lại L2 lịch sử bằng cách bật live.
+6. Chọn **nghiên cứu** ở thanh trên cùng để mở các hình LOB, OBI, ma trận nhầm lẫn, calibration, hiệu năng theo giai đoạn và so sánh DeepLOB. Dưới mỗi hình có cách đọc, số liệu chính và diễn giải kết quả. Chọn **dashboard** để quay lại màn hình live/replay. Đây là các hình nghiên cứu đã lưu, không cập nhật theo luồng realtime; phần holdout chỉ hiển thị kết quả tổng hợp từ lần chấm trước đó.
 
 Dashboard sử dụng luồng SSE qua proxy Vite tại `127.0.0.1:8000`; trình duyệt tự kết nối lại nếu mất SSE. Không cần tạo file `.env` hay sửa `VITE_API_ROOT` cho cách chạy mặc định này.
 

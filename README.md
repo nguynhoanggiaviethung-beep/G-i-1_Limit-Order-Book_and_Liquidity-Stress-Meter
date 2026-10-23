@@ -8,7 +8,7 @@ Research and replay dashboard for short-horizon cryptocurrency market microstruc
 - Replay into a valid one-second grid with the top 20 bid and ask levels. Sequence gaps invalidate samples until a complete snapshot restores the book.
 - Primary horizon: 5 seconds. Sensitivity horizons: 1 and 10 seconds.
 - Primary liquidity-stress label: train-only composite of unusually wide spread, high price impact, low depth, or high realized volatility. This avoids a discrete one-tick spread threshold producing too few positive samples.
-- Baselines: one-second direction persistence, stress-state persistence, Logistic Regression, Random Forest, and XGBoost. A sequence-based DeepLOB-style CNN-LSTM runner exists but was not evaluated in the saved submission pilot.
+- Baselines: one-second direction persistence, stress-state persistence, Logistic Regression, Random Forest, and XGBoost. DeepLOB CNN-LSTM has a validation-only comparison for the primary five-second horizon; it did not outperform Logistic/XGBoost on the sampled validation points and was not evaluated on the once-scored holdout.
 - The frozen archive pilot uses training 2026-09-28–2026-10-04, validation 2026-10-05–2026-10-11, and holdout 2026-10-12–2026-10-18. The submission evidence audit is scheduled for 2026-10-23, report handoff for 2026-10-24–25, and submission for 2026-10-26. This is a deadline-driven retrospective pilot, not a replacement claim for a prospective study.
 - Product: a read-only dashboard with continuous Binance Spot live monitoring and historical replay. Live collection starts with the API, uses public market-data endpoints only, and never places orders.
 
@@ -118,18 +118,20 @@ The script writes full-depth features, rolling OFI/trade flow, price impact, and
 
 The offline classifier uses `config/settings.yaml`; the API and live collector use `config/settings_live.yaml`. The runner refuses to score an existing final-test output again. Do not pass `--allow-repeat-final-test` for the submission pilot.
 
-For the 2026-10-26 handoff, do not rerun model evaluation. Rebuild the read-only audit tables from saved results and manifests with `& $PY backend\scripts\build_submission_evidence.py`; see [implementation_status.md](docs/implementation_status.md) for generated files and limitations.
+For the 2026-10-26 handoff, do not rescore the classical-model final holdout. The DeepLOB comparison is isolated to the development validation week and never loads holdout partitions. Rebuild read-only audit tables with `& $PY backend\scripts\build_submission_evidence.py`; regenerate research figures with `& $PY backend\scripts\build_research_figures.py`. See [implementation_status.md](docs/implementation_status.md) for evidence boundaries.
 
 The run reports stress-label prevalence by month and stops if development prevalence is outside the configured 2–10% range. The primary label is the train-only composite at `stress_quantile: 0.975` and `stress_depth_quantile: 0.025`. It also reports δ and L sensitivity, paired McNemar and minute-blocked Newey–West Diebold–Mariano Brier tests against persistence, prediction latency, and model size. DM inference averages paired losses by UTC minute, uses an automatic bandwidth with a 10-minute minimum, and withholds a p-value when fewer than 30 minute blocks are available. Impact notionals and tick sizes are configured per symbol in `config/settings.yaml`.
 
-DeepLOB requires the optional PyTorch dependency. Install it and run the sequence-model comparison with:
+DeepLOB requires optional PyTorch; research figures require Matplotlib. To reproduce the validation-only comparison and figures:
 
 ```powershell
-& $PY -m pip install -r requirements-dl.txt
-& $PY backend\scripts\run_deeplob_classification.py --symbol BTCUSDT --horizon 5
+& $PY -m pip install -r requirements-dl.txt --index-url https://download.pytorch.org/whl/cpu
+& $PY -m pip install -r requirements-dev.txt
+& $PY backend\scripts\run_deeplob_validation.py --horizon 5
+& $PY backend\scripts\build_research_figures.py
 ```
 
-The DeepLOB runner is available but a full fit/predict run is not verified for this submission pilot. Do not run it against the once-scored holdout; report DeepLOB as not evaluated unless an existing saved run supplies valid evidence. Any later prospective DeepLOB study must use the same origins for DeepLOB, Logistic Regression, and persistence and report its compute cap, sample counts, parameter count, and latency.
+The validation-only DeepLOB run compares DeepLOB, Logistic, and XGBoost on the same deterministically sampled validation origins, with an 8,000-row cap per training fit and at most 2,500 validation points per task. Its predictions and metrics are saved under `outputs/deeplob/`. It does not score the final holdout. Research figures are saved under `outputs/research_figures/`; holdout confusion/calibration/performance figures use previously saved aggregate metrics and do not reopen or rescore the holdout. The pilot has just one validation week and one holdout week, so its time-comparison plot cannot establish long-term stability. Follow the archive provider's redistribution restrictions for all figures and derived outputs.
 
 ## API
 
@@ -171,6 +173,6 @@ The previous Tail-Risk API, scripts, tests, configurations, and results are pres
 - Report macro F1, balanced accuracy, MCC, class precision/recall, Brier score, calibration, and stress PR-AUC. Accuracy alone is not a model-selection metric.
 - Compare OFI against static depth imbalance using the same model and folds.
 - Report the fraction of valid replay seconds and every recovery after a sequence gap.
-- The archive pilot is the only research evaluation available for submission. The short October 2026 Binance captures are operational dashboard smoke data and do not add research holdout evidence. See the date-level source/coverage artifacts under `outputs/data_quality/` when generated; do not infer coverage during periods with no observations.
+- The historical archive pilot is the research evaluation for submission; DeepLOB results are validation-only and do not extend the holdout evidence. The short October 2026 Binance captures are operational dashboard smoke data. See date-level source/coverage artifacts under `outputs/data_quality/`; do not infer coverage during periods with no observations.
 
 See [methodology.md](docs/methodology.md) for definitions and [research_design.md](docs/research_design.md) for frozen defaults.

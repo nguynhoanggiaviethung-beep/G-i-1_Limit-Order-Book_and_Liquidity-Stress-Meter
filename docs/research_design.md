@@ -21,11 +21,11 @@ The study examines whether point-in-time order-book state and order flow provide
 
 - **RQ1:** Do static depth-imbalance measures predict mid-price direction beyond class-frequency and persistence baselines?
 - **RQ2:** Does event-level Order Flow Imbalance add information beyond static imbalance?
-- **RQ3:** How do the implemented classical models compare on the historical pilot's validation and once-scored holdout?
+- **RQ3:** Do the classical baselines or DeepLOB improve mid-price/stress prediction? Classical results are reported on validation and the once-scored holdout; DeepLOB is compared with Logistic/XGBoost on validation only because the holdout is locked.
 - **RQ4:** How stable are results across symbols, horizons, weeks, and volatility regimes where observations permit?
 - **RQ5:** Do conclusions persist under imbalance-aware metrics, calibration, and label/feature sensitivity checks?
 
-DeepLOB is an optional compute-limited experiment. Its CNN-LSTM training and inference have not been verified in this pilot; no comparative claim about DeepLOB is made.
+DeepLOB was run with PyTorch for the primary five-second horizon on the single validation week only. It uses at most 8,000 training rows and 2,500 evenly spaced validation origins per task, with Logistic and XGBoost evaluated on those same origins. In this limited comparison DeepLOB did not outperform either classical model on direction macro-F1 or stress PR-AUC. This is a validation-only pilot result, not a holdout conclusion.
 
 ## Frozen scope and defaults
 
@@ -69,6 +69,6 @@ Report delta sensitivity, OBI depth sensitivity, composite versus spread-only st
 
 ## Evidence and limits
 
-Saved pilot metrics in `outputs/tables/historical_archive_pilot/` document the single validation week and the once-scored holdout. Data QA sidecars and validator outputs document actual coverage. No result may imply the November schedule was completed, that a short Binance capture is a research sample, or that the meter provides live trading predictions. Any missing requested analysis must be marked unavailable or not evaluated in the report.
+Saved pilot metrics in `outputs/tables/historical_archive_pilot/` document the single validation week and the once-scored classical holdout. DeepLOB validation metrics and pointwise predictions are saved under `outputs/deeplob/`. Research figures are generated under `outputs/research_figures/`; holdout panels reuse saved aggregate metrics without rerunning the test. Data QA sidecars and validator outputs document actual coverage. No result may imply the November schedule was completed, that a short Binance capture is a research sample, or that the meter provides live trading predictions. Any missing requested analysis must be marked unavailable or not evaluated in the report.
 
-The pilot is limited by its single validation week, compute-limited training sample, and reliance on an external archive's receive-time clock. DeepLOB execution has not been demonstrated. Results do not establish robust prospective performance, cross-exchange generalization, or causal effects of liquidity on price.
+The pilot is limited by its single validation week, compute-limited training sample, and reliance on an external archive's receive-time clock. DeepLOB has no final-holdout result and uses a capped validation sample. Results do not establish robust prospective performance, cross-exchange generalization, or causal effects of liquidity on price.

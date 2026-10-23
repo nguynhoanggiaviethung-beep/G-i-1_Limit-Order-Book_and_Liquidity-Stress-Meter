@@ -39,6 +39,23 @@ The primary five-second holdout results are:
 
 The positive stress rate was about 6.3% in BTC development and 6.4% in ETH development. The holdout rates differ by symbol, showing some period drift. All three horizons (1, 5, and 10 seconds) have trained artifacts for both symbols. Full results, including calibration, class-level metrics, paired tests, and other horizons, are in `outputs/tables/historical_archive_pilot/<SYMBOL>/classification_metrics.json`; model artifacts are in `backend/artifacts/meter/<SYMBOL>/horizon_<SECONDS>.joblib`.
 
+### DeepLOB validation-only comparison
+
+DeepLOB was run with PyTorch on CPU for the primary five-second horizon. This comparison uses the single 2026-10-05–2026-10-11 validation week, up to 8,000 training rows per fit, and at most 2,500 evenly spaced validation origins per task. Logistic and XGBoost use the same training endpoints and validation origins. The final holdout was neither read nor scored by this run.
+
+| Symbol | Task | n | DeepLOB | Logistic | XGBoost | Metric |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| BTCUSDT | Direction | 2,496 | 0.5681 | 0.5871 | 0.5822 | Macro-F1 |
+| BTCUSDT | Stress | 2,497 | 0.2296 | 0.3705 | 0.4353 | PR-AUC |
+| ETHUSDT | Direction | 2,496 | 0.5065 | 0.5571 | 0.5255 | Macro-F1 |
+| ETHUSDT | Stress | 2,498 | 0.3081 | 0.4517 | 0.5337 | PR-AUC |
+
+On this sampled validation week, DeepLOB did not outperform Logistic or XGBoost for either symbol/task. Treat this as a compute-limited development comparison, not an out-of-sample test conclusion. Pointwise validation predictions are saved in `outputs/deeplob/validation_predictions_h5.csv`; summary metrics are in `validation_metrics_h5.json`.
+
+### Research figures
+
+Run `backend/scripts/build_research_figures.py` to regenerate the PNGs in `outputs/research_figures/`. LOB heatmap and OBI-versus-forward-return figures use validation data. Holdout confusion matrices, calibration curves, and the two-period performance plot use the aggregate metrics already saved by the one-time classical-model holdout run; the script does not reopen source holdout partitions or rescore the holdout. The performance plot has only one validation and one holdout point, so it cannot establish long-term stability.
+
 The source replay grid and features remain isolated from the dashboard. Restart the API after training to reload artifacts. Replay predictions still require a recent valid book in the configured replay grid; continuous live mode scores the public Binance stream separately after the live rolling features have warmed up. The pilot archive does not make its provider's historical book available through the dashboard, and live scores do not extend the archive holdout evidence.
 
 ## Download, replay, and train
