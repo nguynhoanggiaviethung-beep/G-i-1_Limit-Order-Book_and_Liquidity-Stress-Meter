@@ -5,6 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+DIRECTION_LABEL_SCHEMA_VERSION = "midprice-direction.v1"
+
 
 def _valid_future_window(frame: pd.DataFrame, origin: int, horizon_seconds: int) -> int | None:
     target = origin + horizon_seconds
@@ -37,7 +39,7 @@ def fit_direction_delta(training_frame: pd.DataFrame, horizon_seconds: int, quan
 
 def make_direction_labels(frame: pd.DataFrame, horizon_seconds: int, delta: float) -> pd.Series:
     """Label each origin using the exact future timestamp and contiguous path."""
-    if horizon_seconds < 1 or delta < 0:
+    if horizon_seconds < 1 or not np.isfinite(delta) or delta < 0:
         raise ValueError("horizon_seconds must be positive and delta non-negative")
     prices = pd.to_numeric(frame["mid_price"], errors="coerce").to_numpy(dtype=float)
     valid = valid_future_origins(frame, horizon_seconds)[:-horizon_seconds]

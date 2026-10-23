@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import sys
 import time
 from pathlib import Path
@@ -19,28 +20,65 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.core.config import REPOSITORY_ROOT, load_settings
 from app.evaluation.lob_classification import classification_metrics, expanding_week_folds, paired_classification_tests
-from app.labels.direction import fit_direction_delta, make_direction_labels
+from app.labels.direction import DIRECTION_LABEL_SCHEMA_VERSION, fit_direction_delta, make_direction_labels
 from app.labels.stress import (
     fit_primary_stress_thresholds,
     make_stress_labels,
     monthly_positive_rates,
+    STRESS_LABEL_SCHEMA_VERSION,
 )
-from app.models.lob_classifiers import LOB_CLASSIFICATION_FEATURES, make_classifiers
+from app.models.lob_classifiers import LOB_CLASSIFICATION_FEATURES, LOB_CLASSIFICATION_FEATURE_SCHEMA_VERSION, make_classifiers
 
 
 DIRECTION_CLASSES = ("down", "flat", "up")
 STRESS_CLASSES = (0, 1)
+logger = logging.getLogger(__name__)
 
 
-def _load_features(symbol: str) -> pd.DataFrame:
-    root = load_settings().data_dir / "features"
+def _study_provenance(
+    frame: pd.DataFrame,
+    settings,
+    horizons: tuple[int, ...],
+    settings_path: Path,
+    study_label: str,
+) -> dict[str, object]:
+    settings_hash = hashlib.sha256(settings_path.read_bytes()).hexdigest()
+    timestamps = pd.to_datetime(frame["timestamp_utc"], utc=True, errors="coerce").dropna()
+    return {
+        "configuration_file": str(settings_path.relative_to(REPOSITORY_ROOT)),
+        "configuration_sha256": settings_hash,
+        "study_label": study_label,
+        "feature_schema_version": LOB_CLASSIFICATION_FEATURE_SCHEMA_VERSION,
+        "direction_label_schema_version": DIRECTION_LABEL_SCHEMA_VERSION,
+        "stress_label_schema_version": STRESS_LABEL_SCHEMA_VERSION,
+        "observed_data_start_utc": timestamps.min().isoformat() if len(timestamps) else None,
+        "observed_data_end_utc": timestamps.max().isoformat() if len(timestamps) else None,
+        "symbols": sorted(frame["symbol"].dropna().astype(str).str.upper().unique().tolist()) if "symbol" in frame else [],
+        "horizons_seconds": list(horizons),
+        "development_end_utc": settings.lob_development_end_utc,
+        "final_test_start_utc": settings.lob_untouched_test_start_utc,
+        "final_test_end_utc": settings.lob_untouched_test_end_utc,
+        "random_seeds": {"sklearn_estimators": 42, "classical_train_row_sampling": 42},
+    }
+
+
+def _load_features(symbol: str, settings) -> pd.DataFrame:
+    root = settings.data_dir / "features"
     paths = sorted(root.rglob("features_1s.parquet"))
     paths = [path for path in paths if f"symbol={symbol}" in path.parts]
     if not paths:
         raise FileNotFoundError(f"No feature partitions for {symbol} under {root}; run build_lob_classification_dataset.py first")
     frame = pd.concat((pd.read_parquet(path) for path in paths), ignore_index=True)
     frame["timestamp_utc"] = pd.to_datetime(frame["timestamp_utc"], utc=True, errors="coerce")
-    frame = frame.dropna(subset=["timestamp_utc"]).sort_values("timestamp_utc").drop_duplicates("timestamp_utc", keep="last").reset_index(drop=True)
+    frame = frame.dropna(subset=["timestamp_utc"]).sort_values("timestamp_utc", kind="mergesort")
+    duplicate_count = int(frame.duplicated("timestamp_utc", keep="last").sum())
+    if duplicate_count:
+        logger.warning(
+            "Resolved %d duplicate feature timestamps for %s by keeping the last input row",
+            duplicate_count,
+            symbol,
+        )
+    frame = frame.drop_duplicates("timestamp_utc", keep="last").reset_index(drop=True)
     return frame
 
 
@@ -58,6 +96,8 @@ def _align_probabilities(model, x: pd.DataFrame, class_order: tuple[object, ...]
 
 
 def _threshold_for_stress(probabilities: np.ndarray, truth: np.ndarray) -> float:
+    if len(probabilities) != len(truth) or not len(truth) or len(np.unique(truth)) < 2:
+        raise ValueError("Stress decision threshold needs paired development predictions with both classes")
     best_threshold, best_score = 0.5, -2.0
     for threshold in np.linspace(0.05, 0.95, 91):
         prediction = (probabilities >= threshold).astype(int)
@@ -83,19 +123,33 @@ def _direction_persistence_predictions(frame: pd.DataFrame, delta: float) -> np.
     return predictions
 
 
-def _current_stress_state(frame: pd.DataFrame, thresholds) -> np.ndarray:
+def _current_stress_state(frame: pd.DataFrame, thresholds) -> pd.Series:
     spread_name = thresholds.spread_metric if thresholds.spread_metric in frame else "spread_ticks"
-    spread_stress = pd.to_numeric(frame[spread_name], errors="coerce") > thresholds.spread_upper
+    spread = pd.to_numeric(frame[spread_name], errors="coerce").to_numpy(dtype=float)
+    valid = np.isfinite(spread)
+    if "book_valid" in frame:
+        book_valid = frame["book_valid"]
+        if book_valid.dtype == object:
+            valid &= book_valid.astype(str).str.strip().str.lower().isin({"true", "1", "yes"}).to_numpy()
+        else:
+            valid &= book_valid.fillna(False).astype(bool).to_numpy()
+    states = np.full(len(frame), pd.NA, dtype=object)
     if thresholds.definition == "spread_only":
-        return spread_stress.fillna(False).to_numpy(dtype=int)
+        states[valid] = (spread[valid] > thresholds.spread_upper).astype(int)
+        return pd.Series(states, index=frame.index, dtype="Int64")
     impact_name = "price_impact_bps" if "price_impact_bps" in frame else "impact_bps"
     depth_name = thresholds.depth_metric if thresholds.depth_metric in frame else "depth_notional_10"
-    return (
-        spread_stress
-        | (pd.to_numeric(frame[impact_name], errors="coerce") > thresholds.impact_upper)
-        | (pd.to_numeric(frame[depth_name], errors="coerce") < thresholds.depth_lower)
-        | (pd.to_numeric(frame["rv_60s"], errors="coerce") > thresholds.rv_60_upper)
-    ).fillna(False).to_numpy(dtype=int)
+    impact = pd.to_numeric(frame[impact_name], errors="coerce").to_numpy(dtype=float)
+    depth = pd.to_numeric(frame[depth_name], errors="coerce").to_numpy(dtype=float)
+    rv = pd.to_numeric(frame["rv_60s"], errors="coerce").to_numpy(dtype=float)
+    valid &= np.isfinite(impact) & np.isfinite(depth) & np.isfinite(rv)
+    states[valid] = (
+        (spread[valid] > thresholds.spread_upper)
+        | (impact[valid] > thresholds.impact_upper)
+        | (depth[valid] < thresholds.depth_lower)
+        | (rv[valid] > thresholds.rv_60_upper)
+    ).astype(int)
+    return pd.Series(states, index=frame.index, dtype="Int64")
 
 
 def _stress_threshold_rows(frame: pd.DataFrame, time_mask: pd.Series, definition: str = "composite") -> pd.DataFrame:
@@ -111,14 +165,16 @@ def _stress_threshold_rows(frame: pd.DataFrame, time_mask: pd.Series, definition
     if definition == "spread_only":
         if spread_name is None:
             raise ValueError("Spread-only stress thresholds require a spread feature")
-        return frame.loc[valid & pd.to_numeric(frame[spread_name], errors="coerce").notna()]
+        finite_spread = np.isfinite(pd.to_numeric(frame[spread_name], errors="coerce").to_numpy(dtype=float))
+        return frame.loc[valid & finite_spread]
     depth_name = next((name for name in ("depth_notional_10", "depth_qty_10") if name in frame), None)
     impact_name = next((name for name in ("price_impact_bps", "impact_bps") if name in frame), None)
-    for name in (spread_name, impact_name, depth_name, "rv_60s"):
-        if name is None:
-            continue
-        if name in frame:
-            valid &= pd.to_numeric(frame[name], errors="coerce").notna()
+    required = (spread_name, impact_name, depth_name, "rv_60s")
+    if any(name is None or name not in frame for name in required):
+        raise ValueError("Composite stress thresholds need spread, price impact, top-10 depth, and rv_60s features")
+    for name in required:
+        values = pd.to_numeric(frame[name], errors="coerce").to_numpy(dtype=float)
+        valid &= np.isfinite(values)
     return frame.loc[valid]
 
 
@@ -207,11 +263,19 @@ def _fit_candidates(task: str, x_train: pd.DataFrame, y_train: pd.Series, x_vali
 def _select_model(task: str, scores: dict[str, list[dict]]) -> str:
     if not scores:
         raise RuntimeError(f"No {task} model completed any walk-forward fold")
-    if task == "direction":
-        return max(scores, key=lambda name: np.nanmean([row["macro_f1"] for row in scores[name]]))
-    return max(scores, key=lambda name: np.nanmean([
-        row["pr_auc"] if row.get("pr_auc") is not None else -1.0 for row in scores[name]
-    ]))
+    primary_metric = "macro_f1" if task == "direction" else "pr_auc"
+
+    def selection_key(name: str) -> tuple[float, float]:
+        rows = scores[name]
+        primary = [float(row[primary_metric]) for row in rows if row.get(primary_metric) is not None and np.isfinite(row[primary_metric])]
+        secondary = [float(row["mcc"]) for row in rows if row.get("mcc") is not None and np.isfinite(row["mcc"])]
+        return (
+            float(np.mean(primary)) if primary else -1.0,
+            float(np.mean(secondary)) if secondary else -1.0,
+        )
+
+    # Primary metric selects the model; validation MCC is a predeclared tie-breaker.
+    return max(scores, key=selection_key)
 
 
 def _fit_final(task: str, name: str, x: pd.DataFrame, y: pd.Series, max_train_rows: int):
@@ -286,13 +350,24 @@ def _apply_stress_isotonic(probability: np.ndarray, calibrator) -> np.ndarray:
     return calibrator.predict(probability) if calibrator is not None else probability.copy()
 
 
-def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max_train_rows: int, settings) -> dict:
-    frame = _load_features(symbol)
-    if "depth_qty_10" not in frame:
-        frame["depth_qty_10"] = pd.to_numeric(frame.get("bid_depth_qty_10"), errors="coerce") + pd.to_numeric(frame.get("ask_depth_qty_10"), errors="coerce")
-    times = pd.to_datetime(frame["timestamp_utc"], utc=True)
+def run_symbol(
+    symbol: str,
+    horizons: tuple[int, ...],
+    embargo_seconds: int,
+    max_train_rows: int,
+    settings,
+    settings_path: Path,
+    artifact_root: Path,
+    study_label: str,
+) -> dict:
+    all_frame = _load_features(symbol, settings)
+    if "depth_qty_10" not in all_frame:
+        all_frame["depth_qty_10"] = pd.to_numeric(all_frame.get("bid_depth_qty_10"), errors="coerce") + pd.to_numeric(all_frame.get("ask_depth_qty_10"), errors="coerce")
+    all_times = pd.to_datetime(all_frame["timestamp_utc"], utc=True)
     test_start = pd.Timestamp(settings.lob_untouched_test_start_utc)
     test_end = pd.Timestamp(settings.lob_untouched_test_end_utc) + pd.Timedelta(seconds=1)
+    frame = all_frame.loc[all_times < test_start].copy().reset_index(drop=True)
+    times = pd.to_datetime(frame["timestamp_utc"], utc=True)
     folds = expanding_week_folds(settings.lob_first_validation_week_utc, settings.lob_development_end_utc)
     if not folds:
         raise RuntimeError("No full weekly walk-forward validation folds are configured")
@@ -302,18 +377,19 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
     if first_train.empty:
         raise RuntimeError(f"Insufficient data before validation week {folds[0]} for the first training fold")
 
-    result: dict[str, object] = {"symbol": symbol, "data_rows": int(len(frame)), "horizons": {}}
-    test_columns = ["timestamp_utc", "mid_price", *LOB_CLASSIFICATION_FEATURES]
-    test_slice = frame.loc[(times >= test_start) & (times < test_end), test_columns]
-    if test_slice.empty:
-        raise RuntimeError(
-            f"No data exists in the frozen final-test week {settings.lob_untouched_test_start_utc[:10]}"
-            f" through {settings.lob_untouched_test_end_utc[:10]}; collect the configured capture window first"
-        )
-    result["final_test_scored_once"] = True
-    result["final_test_data_sha256"] = hashlib.sha256(
-        pd.util.hash_pandas_object(test_slice, index=False).values.tobytes()
-    ).hexdigest()
+    result: dict[str, object] = {
+        "symbol": symbol,
+        "data_rows": int(len(all_frame)),
+        "development_rows": int(len(frame)),
+        "max_train_rows_per_fit": int(max_train_rows),
+        "reproducibility": _study_provenance(all_frame, settings, horizons, settings_path, study_label),
+        "study_label": study_label,
+        "model_selection_criteria": {
+            "direction": {"primary": "mean_validation_macro_f1", "tie_breaker": "mean_validation_mcc"},
+            "stress": {"primary": "mean_validation_pr_auc", "tie_breaker": "mean_validation_mcc"},
+        },
+        "horizons": {},
+    }
     for horizon in horizons:
         delta = fit_direction_delta(first_train, horizon, quantile=settings.lob_direction_delta_quantile)
         direction_labels = make_direction_labels(frame, horizon, delta)
@@ -429,13 +505,18 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
             yv_stress = stress_labels.loc[stress_valid_mask].astype(int)
             sscores, _ = _fit_candidates("stress", x_stress, y_stress, xv_stress, yv_stress, max_train_rows)
             if not y_stress.empty and not yv_stress.empty:
-                persistent = _current_stress_state(frame.loc[stress_valid_mask], stress_thresholds)
-                persistence_metrics = classification_metrics(
-                    yv_stress.to_numpy(), persistent,
-                    np.column_stack([1 - persistent, persistent]),
-                    labels=list(STRESS_CLASSES), stress=True,
-                )
-                stress_fold_metrics.append({"week_utc": week, "model": "stress_persistence", **persistence_metrics})
+                persistence_states = _current_stress_state(frame.loc[stress_valid_mask], stress_thresholds)
+                persistence_mask = persistence_states.notna().to_numpy()
+                if persistence_mask.any():
+                    persistent = persistence_states.loc[persistence_states.notna()].astype(int).to_numpy()
+                    persistence_metrics = classification_metrics(
+                        yv_stress.to_numpy()[persistence_mask], persistent,
+                        np.column_stack([1 - persistent, persistent]),
+                        labels=list(STRESS_CLASSES), stress=True,
+                    )
+                    stress_fold_metrics.append({"week_utc": week, "model": "stress_persistence", **persistence_metrics})
+                else:
+                    stress_fold_metrics.append({"week_utc": week, "model": "stress_persistence", "status": "unavailable", "reason": "No complete current stress state is available"})
             for name, values in sscores.items():
                 stress_scores.setdefault(name, []).extend(values)
                 stress_fold_metrics.append({"week_utc": week, "model": name, **values[-1]})
@@ -451,22 +532,100 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
         final_stress_labels = make_stress_labels(frame, horizon, final_stress_thresholds)
         direction_train_mask = (times < dev_cutoff) & direction_labels.notna()
         stress_train_mask = (times < dev_cutoff) & final_stress_labels.notna()
-        test_mask = (times >= test_start) & (times < test_end - pd.Timedelta(seconds=horizon)) & direction_labels.notna()
-        stress_test_mask = (times >= test_start) & (times < test_end - pd.Timedelta(seconds=horizon)) & final_stress_labels.notna()
-
+        ys_train = final_stress_labels.loc[stress_train_mask].astype(int)
+        stress_train_positive_rate = float(ys_train.mean()) if len(ys_train) else float("nan")
+        prevalence_min = settings.lob_stress_min_positive_rate
+        prevalence_max = settings.lob_stress_max_positive_rate
+        if not np.isfinite(stress_train_positive_rate) or not prevalence_min <= stress_train_positive_rate <= prevalence_max:
+            raise RuntimeError(
+                f"{symbol} h={horizon}: development stress-label prevalence {stress_train_positive_rate:.4f} "
+                f"is outside [{prevalence_min:.2%}, {prevalence_max:.2%}]; revise the train-only label definition before scoring the frozen test week"
+            )
         x_train = frame.loc[direction_train_mask, LOB_CLASSIFICATION_FEATURES]
         y_train = direction_labels.loc[direction_train_mask]
-        x_test = frame.loc[test_mask, LOB_CLASSIFICATION_FEATURES]
-        y_test = direction_labels.loc[test_mask]
         direction_model = _fit_final("direction", direction_name, x_train, y_train, max_train_rows)
-        direction_prediction = direction_model.predict(x_test)
-        direction_probability_raw = _align_probabilities(direction_model, x_test, DIRECTION_CLASSES)
         direction_oos_truth, direction_oos_probability = _collect_selected_oos(
             "direction", direction_name, frame, times, horizon, delta, embargo_seconds,
             max_train_rows, folds, settings.lob_stress_quantile, settings.lob_stress_depth_quantile,
             settings.lob_stress_definition,
         )
         direction_calibrators = _fit_isotonic(direction_oos_truth, direction_oos_probability, DIRECTION_CLASSES)
+        xs_train = frame.loc[stress_train_mask, LOB_CLASSIFICATION_FEATURES]
+        stress_model = _fit_final("stress", stress_name, xs_train, ys_train, max_train_rows)
+        stress_oos_truth, stress_oos_probability = _collect_selected_oos(
+            "stress", stress_name, frame, times, horizon, delta, embargo_seconds,
+            max_train_rows, folds, settings.lob_stress_quantile, settings.lob_stress_depth_quantile,
+            settings.lob_stress_definition,
+        )
+        stress_calibrator = _fit_stress_isotonic(stress_oos_truth, stress_oos_probability)
+        if not len(stress_oos_truth) or len(np.unique(stress_oos_truth)) < 2:
+            raise RuntimeError(f"{symbol} h={horizon}: development walk-forward stress predictions do not contain both classes; refusing to invent a decision threshold")
+        stress_threshold_raw = _threshold_for_stress(stress_oos_probability[:, 1], stress_oos_truth)
+        stress_oos_probability_calibrated = _apply_stress_isotonic(stress_oos_probability[:, 1], stress_calibrator)
+        stress_threshold = _threshold_for_stress(stress_oos_probability_calibrated, stress_oos_truth)
+
+        spread_sensitivity_thresholds = fit_primary_stress_thresholds(
+            _stress_threshold_rows(frame, times < dev_cutoff, "spread_only"),
+            "spread_only",
+            settings.lob_spread_sensitivity_quantile,
+            settings.lob_stress_depth_quantile,
+        )
+        spread_sensitivity_labels = make_stress_labels(frame, horizon, spread_sensitivity_thresholds)
+        spread_sensitivity_train_mask = (times < dev_cutoff) & spread_sensitivity_labels.notna()
+        spread_sensitivity_train_y = spread_sensitivity_labels.loc[spread_sensitivity_train_mask].astype(int)
+        spread_sensitivity: dict[str, object] = {
+            "status": "unavailable",
+            "definition": f"spread_only_train_q{settings.lob_spread_sensitivity_quantile * 100:g}_sensitivity",
+            "thresholds_train": spread_sensitivity_thresholds.as_dict(),
+            "positive_rate_by_month_development": monthly_positive_rates(
+                spread_sensitivity_labels.loc[times < dev_cutoff], times.loc[times < dev_cutoff]
+            ),
+        }
+        spread_sensitivity_model = None
+        if spread_sensitivity_train_y.nunique() == 2:
+            spread_sensitivity_model = _fit_final(
+                "stress", stress_name,
+                frame.loc[spread_sensitivity_train_mask, LOB_CLASSIFICATION_FEATURES],
+                spread_sensitivity_train_y,
+                max_train_rows,
+            )
+        else:
+            spread_sensitivity["reason"] = "Spread-only train thresholds produced a single class; sensitivity label is degenerate"
+
+        regime_training_rv = pd.to_numeric(frame.loc[times < dev_cutoff, "rv_300s"], errors="coerce").dropna()
+        if len(regime_training_rv) and regime_training_rv.quantile(1 / 3) < regime_training_rv.quantile(2 / 3):
+            regime_cutoffs = [float(regime_training_rv.quantile(1 / 3)), float(regime_training_rv.quantile(2 / 3))]
+        else:
+            regime_cutoffs = None
+
+        # Do not slice or label the frozen test week until models, calibration,
+        # decision thresholds, and the development prevalence guard are final.
+        test_rows = (all_times >= test_start) & (all_times < test_end)
+        test_frame = all_frame.loc[test_rows].copy().reset_index(drop=True)
+        if test_frame.empty:
+            raise RuntimeError(
+                f"No data exists in the frozen final-test week {settings.lob_untouched_test_start_utc[:10]}"
+                f" through {settings.lob_untouched_test_end_utc[:10]}; collect the configured capture window first"
+            )
+        test_columns = ["timestamp_utc", "mid_price", *LOB_CLASSIFICATION_FEATURES]
+        test_slice = test_frame[test_columns]
+        if "final_test_data_sha256" not in result:
+            result["final_test_scored_once"] = True
+            result["final_test_data_sha256"] = hashlib.sha256(
+                pd.util.hash_pandas_object(test_slice, index=False).values.tobytes()
+            ).hexdigest()
+        test_times = pd.to_datetime(test_frame["timestamp_utc"], utc=True)
+        direction_test_labels = make_direction_labels(test_frame, horizon, delta)
+        stress_test_labels = make_stress_labels(test_frame, horizon, final_stress_thresholds)
+        test_mask = (test_times < test_end - pd.Timedelta(seconds=horizon)) & direction_test_labels.notna()
+        stress_test_mask = (test_times < test_end - pd.Timedelta(seconds=horizon)) & stress_test_labels.notna()
+        if not test_mask.any() or not stress_test_mask.any():
+            raise RuntimeError(f"{symbol} h={horizon}: no complete final-test labels are available")
+
+        x_test = test_frame.loc[test_mask, LOB_CLASSIFICATION_FEATURES]
+        y_test = direction_test_labels.loc[test_mask]
+        direction_prediction = direction_model.predict(x_test)
+        direction_probability_raw = _align_probabilities(direction_model, x_test, DIRECTION_CLASSES)
         direction_probability = _apply_isotonic(direction_probability_raw, direction_calibrators)
         direction_test_metrics_raw = classification_metrics(
             y_test.to_numpy(), direction_prediction, direction_probability_raw,
@@ -477,7 +636,7 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
             y_test.to_numpy(), direction_prediction_calibrated, direction_probability,
             labels=list(DIRECTION_CLASSES), stress=False,
         )
-        direction_persistence_all = _direction_persistence_predictions(frame, delta)
+        direction_persistence_all = _direction_persistence_predictions(test_frame, delta)
         direction_persistence_test = direction_persistence_all[test_mask.to_numpy()]
         direction_persistence_probability = np.column_stack([
             direction_persistence_test == label for label in DIRECTION_CLASSES
@@ -485,32 +644,12 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
         direction_pairwise = paired_classification_tests(
             y_test.to_numpy(), direction_prediction_calibrated, direction_persistence_test,
             direction_probability, direction_persistence_probability,
-            stress=False, horizon_seconds=horizon, timestamps=times.loc[test_mask],
+            stress=False, horizon_seconds=horizon, timestamps=test_times.loc[test_mask],
         )
 
-        xs_train = frame.loc[stress_train_mask, LOB_CLASSIFICATION_FEATURES]
-        ys_train = final_stress_labels.loc[stress_train_mask].astype(int)
-        xs_test = frame.loc[stress_test_mask, LOB_CLASSIFICATION_FEATURES]
-        ys_test = final_stress_labels.loc[stress_test_mask].astype(int)
-        stress_train_positive_rate = float(ys_train.mean()) if len(ys_train) else float("nan")
-        prevalence_min = settings.lob_stress_min_positive_rate
-        prevalence_max = settings.lob_stress_max_positive_rate
-        if not np.isfinite(stress_train_positive_rate) or not prevalence_min <= stress_train_positive_rate <= prevalence_max:
-            raise RuntimeError(
-                f"{symbol} h={horizon}: development stress-label prevalence {stress_train_positive_rate:.4f} "
-                f"is outside [{prevalence_min:.2%}, {prevalence_max:.2%}]; revise the train-only label definition before scoring the frozen test week"
-            )
-        stress_model = _fit_final("stress", stress_name, xs_train, ys_train, max_train_rows)
+        xs_test = test_frame.loc[stress_test_mask, LOB_CLASSIFICATION_FEATURES]
+        ys_test = stress_test_labels.loc[stress_test_mask].astype(int)
         stress_probability_raw = _align_probabilities(stress_model, xs_test, STRESS_CLASSES)
-        stress_oos_truth, stress_oos_probability = _collect_selected_oos(
-            "stress", stress_name, frame, times, horizon, delta, embargo_seconds,
-            max_train_rows, folds, settings.lob_stress_quantile, settings.lob_stress_depth_quantile,
-            settings.lob_stress_definition,
-        )
-        stress_calibrator = _fit_stress_isotonic(stress_oos_truth, stress_oos_probability)
-        stress_threshold_raw = _threshold_for_stress(stress_oos_probability[:, 1], stress_oos_truth) if len(stress_oos_truth) else 0.5
-        stress_oos_probability_calibrated = _apply_stress_isotonic(stress_oos_probability[:, 1], stress_calibrator)
-        stress_threshold = _threshold_for_stress(stress_oos_probability_calibrated, stress_oos_truth) if len(stress_oos_truth) else 0.5
         stress_probability = _apply_stress_isotonic(stress_probability_raw[:, 1], stress_calibrator)
         stress_prediction = (stress_probability >= stress_threshold).astype(int)
         stress_test_metrics_raw = classification_metrics(
@@ -522,43 +661,29 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
             np.column_stack([1.0 - stress_probability, stress_probability]),
             labels=list(STRESS_CLASSES), stress=True,
         )
-        stress_persistence_test = _current_stress_state(frame.loc[stress_test_mask], final_stress_thresholds)
+        stress_persistence_states = _current_stress_state(test_frame.loc[stress_test_mask], final_stress_thresholds)
+        stress_persistence_mask = stress_persistence_states.notna().to_numpy()
+        stress_persistence_test = stress_persistence_states.loc[stress_persistence_states.notna()].astype(int).to_numpy()
         stress_persistence_probability = np.column_stack([1 - stress_persistence_test, stress_persistence_test]).astype(float)
+        stress_test_probability = np.column_stack([1.0 - stress_probability, stress_probability])
+        stress_test_timestamps = test_times.loc[stress_test_mask]
         stress_pairwise = paired_classification_tests(
-            ys_test.to_numpy(), stress_prediction, stress_persistence_test,
-            np.column_stack([1.0 - stress_probability, stress_probability]), stress_persistence_probability,
-            stress=True, horizon_seconds=horizon, timestamps=times.loc[stress_test_mask],
+            ys_test.to_numpy()[stress_persistence_mask], stress_prediction[stress_persistence_mask], stress_persistence_test,
+            stress_test_probability[stress_persistence_mask], stress_persistence_probability,
+            stress=True, horizon_seconds=horizon, timestamps=stress_test_timestamps.iloc[np.flatnonzero(stress_persistence_mask)],
         )
-        spread_sensitivity_thresholds = fit_primary_stress_thresholds(
-            _stress_threshold_rows(frame, times < dev_cutoff, "spread_only"),
-            "spread_only",
-            settings.lob_spread_sensitivity_quantile,
-            settings.lob_stress_depth_quantile,
+        stress_persistence_test_metrics = classification_metrics(
+            ys_test.to_numpy()[stress_persistence_mask], stress_persistence_test, stress_persistence_probability,
+            labels=list(STRESS_CLASSES), stress=True,
+        ) if stress_persistence_mask.any() else {"n": 0, "status": "unavailable", "reason": "No complete current stress state is available"}
+        spread_sensitivity_test_labels = make_stress_labels(test_frame, horizon, spread_sensitivity_thresholds)
+        spread_sensitivity_test_mask = (test_times < test_end - pd.Timedelta(seconds=horizon)) & spread_sensitivity_test_labels.notna()
+        spread_sensitivity_test_y = spread_sensitivity_test_labels.loc[spread_sensitivity_test_mask].astype(int)
+        spread_sensitivity["positive_rate_by_month_test"] = monthly_positive_rates(
+            spread_sensitivity_test_labels.loc[spread_sensitivity_test_mask], test_times.loc[spread_sensitivity_test_mask]
         )
-        spread_sensitivity_labels = make_stress_labels(frame, horizon, spread_sensitivity_thresholds)
-        spread_sensitivity_train_mask = (times < dev_cutoff) & spread_sensitivity_labels.notna()
-        spread_sensitivity_test_mask = (times >= test_start) & (times < test_end - pd.Timedelta(seconds=horizon)) & spread_sensitivity_labels.notna()
-        spread_sensitivity_train_y = spread_sensitivity_labels.loc[spread_sensitivity_train_mask].astype(int)
-        spread_sensitivity_test_y = spread_sensitivity_labels.loc[spread_sensitivity_test_mask].astype(int)
-        spread_sensitivity: dict[str, object] = {
-            "status": "unavailable",
-            "definition": f"spread_only_train_q{settings.lob_spread_sensitivity_quantile * 100:g}_sensitivity",
-            "thresholds_train": spread_sensitivity_thresholds.as_dict(),
-            "positive_rate_by_month_development": monthly_positive_rates(
-                spread_sensitivity_labels.loc[times < dev_cutoff], times.loc[times < dev_cutoff]
-            ),
-            "positive_rate_by_month_test": monthly_positive_rates(
-                spread_sensitivity_labels.loc[spread_sensitivity_test_mask], times.loc[spread_sensitivity_test_mask]
-            ),
-        }
-        if spread_sensitivity_train_y.nunique() == 2 and not spread_sensitivity_test_y.empty:
-            spread_sensitivity_model = _fit_final(
-                "stress", stress_name,
-                frame.loc[spread_sensitivity_train_mask, LOB_CLASSIFICATION_FEATURES],
-                spread_sensitivity_train_y,
-                max_train_rows,
-            )
-            spread_sensitivity_x_test = frame.loc[spread_sensitivity_test_mask, LOB_CLASSIFICATION_FEATURES]
+        if spread_sensitivity_model is not None and not spread_sensitivity_test_y.empty:
+            spread_sensitivity_x_test = test_frame.loc[spread_sensitivity_test_mask, LOB_CLASSIFICATION_FEATURES]
             spread_sensitivity_probability = _align_probabilities(spread_sensitivity_model, spread_sensitivity_x_test, STRESS_CLASSES)
             spread_sensitivity_prediction = (spread_sensitivity_probability[:, 1] >= 0.5).astype(int)
             spread_sensitivity.update({
@@ -568,25 +693,25 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
                     spread_sensitivity_probability, labels=list(STRESS_CLASSES), stress=True,
                 ),
             })
-        elif spread_sensitivity_train_y.nunique() < 2:
-            spread_sensitivity["reason"] = "Spread-only train thresholds produced a single class; sensitivity label is degenerate"
         else:
             spread_sensitivity["reason"] = "No valid untouched-test spread-only labels are available"
-        regime_training_rv = pd.to_numeric(frame.loc[times < dev_cutoff, "rv_300s"], errors="coerce").dropna()
-        if len(regime_training_rv) and regime_training_rv.quantile(1 / 3) < regime_training_rv.quantile(2 / 3):
-            regime_cutoffs = [float(regime_training_rv.quantile(1 / 3)), float(regime_training_rv.quantile(2 / 3))]
+        if regime_cutoffs is not None:
             test_regimes = pd.cut(
-                pd.to_numeric(frame.loc[test_mask, "rv_300s"], errors="coerce"),
+                pd.to_numeric(test_frame.loc[test_mask, "rv_300s"], errors="coerce"),
+                bins=[-np.inf, regime_cutoffs[0], regime_cutoffs[1], np.inf],
+                labels=["low_volatility", "medium_volatility", "high_volatility"],
+                include_lowest=True,
+            )
+            stress_test_regimes = pd.cut(
+                pd.to_numeric(test_frame.loc[stress_test_mask, "rv_300s"], errors="coerce"),
                 bins=[-np.inf, regime_cutoffs[0], regime_cutoffs[1], np.inf],
                 labels=["low_volatility", "medium_volatility", "high_volatility"],
                 include_lowest=True,
             )
         else:
-            regime_cutoffs = None
-            test_regimes = pd.Series([None] * int(test_mask.sum()), index=frame.index[test_mask])
+            test_regimes = pd.Series([None] * int(test_mask.sum()), index=test_frame.index[test_mask])
+            stress_test_regimes = pd.Series([None] * int(stress_test_mask.sum()), index=test_frame.index[stress_test_mask])
         direction_by_regime, stress_by_regime = {}, {}
-        test_positions = np.flatnonzero(test_mask.to_numpy())
-        stress_position_lookup = {index: position for position, index in enumerate(np.flatnonzero(stress_test_mask.to_numpy()))}
         for regime in ("low_volatility", "medium_volatility", "high_volatility"):
             selected_direction = np.asarray(test_regimes == regime)
             if selected_direction.any():
@@ -596,14 +721,10 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
                     direction_probability[selected_direction],
                     labels=list(DIRECTION_CLASSES), stress=False,
                 )
-            selected_stress_rows = [
-                (index, stress_position_lookup[index]) for index, selected in zip(test_positions, selected_direction)
-                if selected and index in stress_position_lookup
-            ]
-            if selected_stress_rows:
-                selected_indices, selected_positions = zip(*selected_stress_rows)
-                stress_targets = final_stress_labels.loc[list(selected_indices)].astype(int).to_numpy()
-                stress_probs = stress_probability[list(selected_positions)]
+            selected_stress = np.asarray(stress_test_regimes == regime)
+            if selected_stress.any():
+                stress_targets = ys_test.to_numpy()[selected_stress]
+                stress_probs = stress_probability[selected_stress]
                 stress_preds = (stress_probs >= stress_threshold).astype(int)
                 stress_by_regime[regime] = classification_metrics(
                     stress_targets, stress_preds,
@@ -615,8 +736,11 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
         artifact = {
             "symbol": symbol,
             "horizon_seconds": horizon,
+            "study_label": study_label,
+            "max_train_rows_per_fit": int(max_train_rows),
             "model_version": f"{direction_name}-{stress_name}-h{horizon}-{test_start.date().isoformat()}",
             "trained_at_utc": pd.Timestamp.now(tz="UTC").isoformat(),
+            "reproducibility": result["reproducibility"],
             "feature_columns": list(LOB_CLASSIFICATION_FEATURES),
             "direction_model": direction_model,
             "stress_model": stress_model,
@@ -631,7 +755,7 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
             "stress_calibration_method": "isotonic fitted on development walk-forward predictions",
             "metrics": {"direction": direction_test_metrics, "stress": stress_test_metrics},
         }
-        artifact_path = REPOSITORY_ROOT / "backend" / "artifacts" / "meter" / symbol / f"horizon_{horizon}.joblib"
+        artifact_path = artifact_root / symbol / f"horizon_{horizon}.joblib"
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
         joblib.dump(artifact, artifact_path)
         direction_runtime = _runtime_profile(direction_model, x_test)
@@ -652,7 +776,7 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
                 final_stress_labels.loc[times < dev_cutoff], times.loc[times < dev_cutoff]
             ),
             "stress_positive_rate_by_month_test": monthly_positive_rates(
-                final_stress_labels.loc[stress_test_mask], times.loc[stress_test_mask]
+                stress_test_labels.loc[stress_test_mask], test_times.loc[stress_test_mask]
             ),
             "stress_prevalence_check": "within_configured_range",
             "direction_class_distribution_train": {str(key): float(value) for key, value in direction_counts.items()},
@@ -662,6 +786,7 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
             "direction_paired_tests_vs_persistence": direction_pairwise,
             "stress_test": stress_test_metrics,
             "stress_test_raw": stress_test_metrics_raw,
+            "stress_persistence_test": stress_persistence_test_metrics,
             "stress_paired_tests_vs_persistence": stress_pairwise,
             "stress_spread_only_sensitivity": spread_sensitivity,
             "stress_decision_threshold": stress_threshold,
@@ -681,13 +806,20 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], embargo_seconds: int, max
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--settings", type=Path, default=REPOSITORY_ROOT / "config" / "settings.yaml", help="Study settings file; defaults to config/settings.yaml")
+    parser.add_argument("--metrics-dir", type=Path, default=REPOSITORY_ROOT / "outputs" / "tables", help="Metrics output root; defaults to outputs/tables")
+    parser.add_argument("--artifact-dir", type=Path, default=REPOSITORY_ROOT / "backend" / "artifacts" / "meter", help="Model artifact root; defaults to backend/artifacts/meter")
+    parser.add_argument("--study-label", default="configured_study", help="Provenance label stored in metrics and model artifacts")
     parser.add_argument("--symbol", choices=("BTCUSDT", "ETHUSDT"))
     parser.add_argument("--horizon", type=int, choices=(1, 5, 10))
     parser.add_argument("--embargo-seconds", type=int)
     parser.add_argument("--max-train-rows", type=int, default=250000, help="Deterministic class-stratified cap for each model fit")
     parser.add_argument("--allow-repeat-final-test", action="store_true", help="Explicitly allow scoring the frozen final-test week again after a prior run")
     args = parser.parse_args()
-    settings = load_settings()
+    settings_path = args.settings if args.settings.is_absolute() else REPOSITORY_ROOT / args.settings
+    metrics_dir = args.metrics_dir if args.metrics_dir.is_absolute() else REPOSITORY_ROOT / args.metrics_dir
+    artifact_root = args.artifact_dir if args.artifact_dir.is_absolute() else REPOSITORY_ROOT / args.artifact_dir
+    settings = load_settings(settings_path)
     embargo_seconds = args.embargo_seconds if args.embargo_seconds is not None else settings.lob_embargo_seconds
     if args.max_train_rows < len(DIRECTION_CLASSES) or embargo_seconds < 1:
         raise SystemExit("--max-train-rows must be at least 3 and --embargo-seconds must be positive")
@@ -696,15 +828,18 @@ def main() -> int:
     minimum_embargo = max(max(horizons), settings.lob_feature_lookback_seconds, settings.lob_deeplob_lookback_seconds)
     if embargo_seconds < minimum_embargo:
         raise SystemExit(f"Embargo must be at least {minimum_embargo} seconds for the configured horizon and feature/sequence windows")
-    prior_outputs = [REPOSITORY_ROOT / "outputs" / "tables" / symbol / "classification_metrics.json" for symbol in symbols]
+    prior_outputs = [metrics_dir / symbol / "classification_metrics.json" for symbol in symbols]
     already_scored = [path for path in prior_outputs if path.is_file()]
     if already_scored and not args.allow_repeat_final_test:
         paths = ", ".join(str(path.relative_to(REPOSITORY_ROOT)) for path in already_scored)
         raise SystemExit(f"Final-test output already exists for {paths}. Use --allow-repeat-final-test only when an intentional re-score is approved.")
     output = {}
     for symbol in symbols:
-        output[symbol] = run_symbol(symbol, horizons, embargo_seconds, args.max_train_rows, settings)
-    result_dir = REPOSITORY_ROOT / "outputs" / "tables"
+        output[symbol] = run_symbol(
+            symbol, horizons, embargo_seconds, args.max_train_rows, settings,
+            settings_path, artifact_root, args.study_label,
+        )
+    result_dir = metrics_dir
     result_dir.mkdir(parents=True, exist_ok=True)
     for symbol, payload in output.items():
         symbol_dir = result_dir / symbol

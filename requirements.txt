@@ -2,6 +2,7 @@ requests==2.34.2
 numpy==2.5.4
 pandas==2.3.3
 pyarrow==24.0.0
+zstandard==0.25.0
 PyYAML==6.0.3
 fastapi==0.143.3
 starlette==1.8.0

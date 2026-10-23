@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 def _window_sum(values: pd.Series, segments: pd.Series, window: int) -> pd.Series:
@@ -48,7 +52,14 @@ def build_classification_features(
     if time_column not in frame:
         raise ValueError("Grid must have timestamp_utc or sample_time_utc")
     frame["timestamp_utc"] = pd.to_datetime(frame[time_column], utc=True, errors="coerce")
-    frame = frame.dropna(subset=["timestamp_utc"]).sort_values("timestamp_utc").drop_duplicates("timestamp_utc", keep="last").reset_index(drop=True)
+    frame = frame.dropna(subset=["timestamp_utc"]).sort_values("timestamp_utc", kind="mergesort")
+    duplicate_count = int(frame.duplicated("timestamp_utc", keep="last").sum())
+    if duplicate_count:
+        logger.warning(
+            "Resolved %d duplicate order-book feature timestamps by keeping the last input row",
+            duplicate_count,
+        )
+    frame = frame.drop_duplicates("timestamp_utc", keep="last").reset_index(drop=True)
     if "book_valid" not in frame:
         frame["book_valid"] = True
     if frame["book_valid"].dtype == object:

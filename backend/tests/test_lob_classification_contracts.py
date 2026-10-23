@@ -3,17 +3,20 @@ import pandas as pd
 import pytest
 
 from app.core.config import Settings
-from app.evaluation.lob_classification import paired_classification_tests
+from app.evaluation.lob_classification import apply_embargo, expanding_week_folds, paired_classification_tests
 from app.features.classification_features import build_classification_features
 from app.labels.direction import make_direction_labels
 from app.labels.stress import (
+    StressThresholds,
     fit_spread_only_threshold,
     fit_stress_thresholds,
+    make_stress_labels,
     make_spread_only_labels,
     monthly_positive_rates,
 )
 from app.models.deeplob_classifier import DEEPLOB_INPUT_COLUMNS, DeepLOBClassifier, build_lob_sequences
 from scripts.build_lob_classification_dataset import build_partition_features
+from scripts.run_lob_classification import _current_stress_state, _select_model
 
 
 def test_stress_thresholds_prefer_tick_spread_and_notional_depth():
@@ -55,6 +58,79 @@ def test_single_spread_sensitivity_uses_future_values_and_train_threshold():
     assert pd.isna(labels.iloc[-1])
 
 
+def test_composite_stress_label_stays_missing_when_a_future_component_is_missing():
+    frame = pd.DataFrame({
+        "timestamp_utc": pd.date_range("2025-01-01T00:00:00Z", periods=5, freq="s"),
+        "book_valid": True,
+        "mid_price": [100.0] * 5,
+        "spread_ticks": [1.0, 1.0, np.nan, 1.0, 1.0],
+        "price_impact_bps": [1.0] * 5,
+        "depth_notional_10": [100.0] * 5,
+        "rv_60s": [0.1] * 5,
+    })
+    thresholds = StressThresholds(2.0, 2.0, 50.0, 1.0, 0.05, definition="composite")
+    labels = make_stress_labels(frame, horizon_seconds=1, thresholds=thresholds)
+    assert labels.iloc[0] == 0
+    assert pd.isna(labels.iloc[1])
+
+
+@pytest.mark.parametrize("missing_column", ["spread_ticks", "price_impact_bps", "depth_notional_10", "rv_60s"])
+def test_composite_stress_requires_every_future_component(missing_column):
+    frame = pd.DataFrame({
+        "timestamp_utc": pd.date_range("2025-01-01T00:00:00Z", periods=3, freq="s"),
+        "book_valid": True,
+        "mid_price": [100.0] * 3,
+        "spread_ticks": [1.0] * 3,
+        "price_impact_bps": [1.0] * 3,
+        "depth_notional_10": [100.0] * 3,
+        "rv_60s": [0.1] * 3,
+    })
+    frame.loc[1, missing_column] = np.nan
+    thresholds = StressThresholds(2.0, 2.0, 50.0, 1.0, 0.05, definition="composite")
+    labels = make_stress_labels(frame, horizon_seconds=1, thresholds=thresholds)
+    assert pd.isna(labels.iloc[0])
+
+
+def test_composite_stress_uses_strict_or_thresholds_for_each_component():
+    frame = pd.DataFrame({
+        "timestamp_utc": pd.date_range("2025-01-01T00:00:00Z", periods=7, freq="s"),
+        "book_valid": True,
+        "mid_price": [100.0] * 7,
+        "spread_ticks": [1.0, 3.0, 1.0, 1.0, 1.0, 2.0, 1.0],
+        "price_impact_bps": [1.0, 1.0, 3.0, 1.0, 1.0, 2.0, 1.0],
+        "depth_notional_10": [100.0, 100.0, 100.0, 20.0, 100.0, 50.0, 100.0],
+        "rv_60s": [0.1, 0.1, 0.1, 0.1, 3.0, 1.0, 0.1],
+    })
+    thresholds = StressThresholds(2.0, 2.0, 50.0, 1.0, 0.05, definition="composite")
+    labels = make_stress_labels(frame, horizon_seconds=1, thresholds=thresholds)
+    assert labels.iloc[:4].tolist() == [1, 1, 1, 1]
+    assert labels.iloc[4] == 0
+
+
+def test_current_composite_stress_state_does_not_treat_missing_as_non_stress():
+    frame = pd.DataFrame({
+        "book_valid": [True, True],
+        "spread_ticks": [1.0, np.nan],
+        "price_impact_bps": [1.0, 1.0],
+        "depth_notional_10": [100.0, 100.0],
+        "rv_60s": [0.1, 0.1],
+    })
+    thresholds = StressThresholds(2.0, 2.0, 50.0, 1.0, 0.05, definition="composite")
+    states = _current_stress_state(frame, thresholds)
+    assert states.iloc[0] == 0
+    assert pd.isna(states.iloc[1])
+
+
+def test_model_selection_uses_mcc_only_as_a_tie_breaker():
+    scores = {
+        "logistic": [{"macro_f1": 0.6, "pr_auc": 0.4, "mcc": 0.3}],
+        "random_forest": [{"macro_f1": 0.6, "pr_auc": 0.4, "mcc": 0.5}],
+        "xgboost": [{"macro_f1": 0.59, "pr_auc": 0.45, "mcc": 0.9}],
+    }
+    assert _select_model("direction", scores) == "random_forest"
+    assert _select_model("stress", scores) == "xgboost"
+
+
 def test_direction_labels_require_exact_contiguous_future_prices():
     frame = pd.DataFrame({
         "timestamp_utc": pd.to_datetime([
@@ -70,6 +146,19 @@ def test_direction_labels_require_exact_contiguous_future_prices():
     assert labels.iloc[2] == "down"
     assert labels.iloc[3] == "up"
     assert pd.isna(labels.iloc[4])
+
+
+def test_direction_boundaries_are_flat_and_nonfinite_delta_is_rejected():
+    frame = pd.DataFrame({
+        "timestamp_utc": pd.date_range("2025-01-01T00:00:00Z", periods=5, freq="s"),
+        "book_valid": True,
+        "mid_price": [100.0, 101.0, 100.0, 98.9, 98.9],
+    })
+    labels = make_direction_labels(frame, horizon_seconds=1, delta=1.0)
+    assert labels.iloc[0] == "flat"
+    assert labels.iloc[1] == "flat"
+    with pytest.raises(ValueError, match="delta"):
+        make_direction_labels(frame, horizon_seconds=1, delta=float("nan"))
 
 
 def test_deeplob_sequences_drop_windows_crossing_missing_seconds():
@@ -121,6 +210,32 @@ def test_paired_mcnemar_and_minute_blocked_brier_dm_are_returned():
     assert result["diebold_mariano_brier"]["n_blocks"] == 60
     assert result["diebold_mariano_brier"]["hac_lag_unit"] == "minutes"
     assert result["diebold_mariano_brier"]["hac_lags"] >= 10
+
+
+def test_minute_blocked_dm_withholds_asymptotic_p_value_below_30_blocks():
+    truth = np.asarray([0, 1] * 600)
+    prediction = truth.copy()
+    baseline = np.roll(truth, 1)
+    probabilities = np.column_stack([1 - prediction, prediction]).astype(float)
+    baseline_probabilities = np.column_stack([1 - baseline, baseline]).astype(float)
+    timestamps = pd.date_range("2026-11-23T00:00:00Z", periods=len(truth), freq="s")
+    result = paired_classification_tests(
+        truth, prediction, baseline, probabilities, baseline_probabilities,
+        horizon_seconds=5, timestamps=timestamps,
+    )
+    assert result["diebold_mariano_brier"]["n_blocks"] == 20
+    assert result["diebold_mariano_brier"]["statistic"] is None
+    assert result["diebold_mariano_brier"]["p_value_two_sided_normal"] is None
+
+
+def test_weekly_folds_are_frozen_to_the_development_period_and_embargoed():
+    folds = expanding_week_folds("2026-11-02T00:00:00Z", "2026-11-22T23:59:59Z")
+    assert folds == ("2026-11-02", "2026-11-09", "2026-11-16")
+    timestamps = pd.Series(pd.to_datetime([
+        "2026-11-01T23:54:59Z", "2026-11-01T23:55:00Z", "2026-11-02T00:00:00Z",
+    ]))
+    kept = apply_embargo(np.array([True, True, False]), timestamps, pd.Timestamp("2026-11-02T00:00:00Z"), 300)
+    assert kept.tolist() == [True, False, False]
 
 
 def test_deeplob_torch_fit_predict_proba_smoke():

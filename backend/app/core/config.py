@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -158,9 +159,9 @@ class Settings:
             raise ValueError("lob.first_validation_week_utc must be a Monday at 00:00 UTC")
         if test_start.tz_convert("UTC").weekday() != 0 or test_start.tz_convert("UTC").time().isoformat() != "00:00:00":
             raise ValueError("lob.untouched_test_start_utc must be a Monday at 00:00 UTC")
-        if test_end.tz_convert("UTC") - test_start.tz_convert("UTC") != pd.Timedelta(days=7) - pd.Timedelta(seconds=1):
+        if test_end.tz_convert("UTC") - test_start.tz_convert("UTC") != timedelta(days=7) - timedelta(seconds=1):
             raise ValueError("The untouched test window must be exactly one full UTC week")
-        if development_end.tz_convert("UTC") != test_start.tz_convert("UTC") - pd.Timedelta(seconds=1):
+        if development_end.tz_convert("UTC") != test_start.tz_convert("UTC") - timedelta(seconds=1):
             raise ValueError("lob.development_end_utc must end immediately before the untouched test week")
         if first_validation_week.tz_convert("UTC") >= development_end.tz_convert("UTC"):
             raise ValueError("The first validation week must precede development_end_utc")

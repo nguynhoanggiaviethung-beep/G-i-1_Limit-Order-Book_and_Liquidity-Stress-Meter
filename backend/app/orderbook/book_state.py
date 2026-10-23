@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -66,7 +67,11 @@ class LocalOrderBook:
         if not self.bids or not self.asks:
             self.invalidate("empty_side")
             raise InvalidBook("A valid book must have at least one bid and one ask")
-        best_bid, best_ask = max(self.bids), min(self.asks)
+        if self._bid_prices_sorted is None:
+            self._bid_prices_sorted = sorted(self.bids)
+        if self._ask_prices_sorted is None:
+            self._ask_prices_sorted = sorted(self.asks)
+        best_bid, best_ask = self._bid_prices_sorted[-1], self._ask_prices_sorted[0]
         if best_bid >= best_ask:
             self.invalidate("crossed_or_locked_book")
             raise InvalidBook("Best bid must be strictly below best ask")
@@ -75,13 +80,19 @@ class LocalOrderBook:
     def best_bid(self) -> tuple[Decimal, Decimal]:
         if not self.valid or not self.bids:
             raise InvalidBook(self.invalid_reason or "book_invalid")
-        return self.top_levels("bid", 1)[0]
+        if self._bid_prices_sorted is None:
+            self._bid_prices_sorted = sorted(self.bids)
+        price = self._bid_prices_sorted[-1]
+        return price, self.bids[price]
 
     @property
     def best_ask(self) -> tuple[Decimal, Decimal]:
         if not self.valid or not self.asks:
             raise InvalidBook(self.invalid_reason or "book_invalid")
-        return self.top_levels("ask", 1)[0]
+        if self._ask_prices_sorted is None:
+            self._ask_prices_sorted = sorted(self.asks)
+        price = self._ask_prices_sorted[0]
+        return price, self.asks[price]
 
     def apply_update(self, event: dict[str, Any]) -> bool:
         """Apply one diff-depth event; return False for an already-applied event."""
@@ -97,10 +108,8 @@ class LocalOrderBook:
                 f"{self.symbol}: expected update {missing_from}, received range {first_id}-{final_id}"
             )
         try:
-            if self._apply_side(self.bids, event.get("b", [])):
-                self._bid_prices_sorted = None
-            if self._apply_side(self.asks, event.get("a", [])):
-                self._ask_prices_sorted = None
+            self._apply_side(self.bids, event.get("b", []), self._bid_prices_sorted)
+            self._apply_side(self.asks, event.get("a", []), self._ask_prices_sorted)
             self.last_update_id = final_id
             self.event_time_ms = int(event["E"]) if event.get("E") is not None else None
             self.transaction_time_ms = int(event["T"]) if event.get("T") is not None else None
@@ -113,8 +122,11 @@ class LocalOrderBook:
         return True
 
     @staticmethod
-    def _apply_side(side: dict[Decimal, Decimal], changes: list[list[str]]) -> bool:
-        keys_changed = False
+    def _apply_side(
+        side: dict[Decimal, Decimal],
+        changes: list[list[str]],
+        sorted_prices: list[Decimal] | None,
+    ) -> None:
         for price_raw, quantity_raw, *_ in changes:
             try:
                 price, quantity = Decimal(str(price_raw)), Decimal(str(quantity_raw))
@@ -125,11 +137,15 @@ class LocalOrderBook:
             if quantity == 0:
                 if price in side:
                     side.pop(price)
-                    keys_changed = True
+                    if sorted_prices is not None:
+                        index = bisect_left(sorted_prices, price)
+                        if index >= len(sorted_prices) or sorted_prices[index] != price:
+                            raise InvalidBook("Sorted price index lost synchronization with the book")
+                        sorted_prices.pop(index)
             else:
-                keys_changed = keys_changed or price not in side
+                if price not in side and sorted_prices is not None:
+                    sorted_prices.insert(bisect_left(sorted_prices, price), price)
                 side[price] = quantity
-        return keys_changed
 
     def top_levels(self, side: str, count: int = 20) -> list[tuple[Decimal, Decimal]]:
         if not self.valid:
@@ -140,9 +156,12 @@ class LocalOrderBook:
         cache_name = "_bid_prices_sorted" if side == "bid" else "_ask_prices_sorted"
         prices = getattr(self, cache_name)
         if prices is None:
-            prices = sorted(levels, reverse=(side == "bid"))
+            prices = sorted(levels)
             setattr(self, cache_name, prices)
-        prices = prices[:count]
+        if side == "bid":
+            prices = prices[-count:][::-1]
+        else:
+            prices = prices[:count]
         return [(price, levels[price]) for price in prices]
 
     def to_checkpoint(self) -> dict[str, Any]:

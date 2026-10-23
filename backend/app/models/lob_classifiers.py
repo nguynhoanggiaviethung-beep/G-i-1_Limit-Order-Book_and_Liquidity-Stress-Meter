@@ -30,6 +30,8 @@ class EncodedClassifier:
         return [self.classes_[int(value)] for value in encoded]
 
 
+LOB_CLASSIFICATION_FEATURE_SCHEMA_VERSION = "lob-classification-features.v1"
+
 LOB_CLASSIFICATION_FEATURES = (
     "spread_ticks", "relative_spread_bps", "microprice_minus_mid_bps",
     "obi_qty_1", "obi_qty_5", "obi_qty_10", "obi_qty_20",

@@ -28,6 +28,29 @@ def _symbol(symbol: str) -> str:
     return value
 
 
+class LiquidityMeterResponse(BaseModel):
+    model_config = {"populate_by_name": True, "extra": "allow"}
+
+    api_schema: str = Field(alias="schema")
+    symbol: str
+    timestamp_utc: str | None = None
+    horizon_seconds: int
+    status: str
+    reason: str | None = None
+    spread: str | None = None
+    depth_imbalance: dict[str, float | None] | None = None
+    ofi_5s: float | None = None
+    quality: dict[str, Any] = Field(default_factory=dict)
+    p_up: float | None = None
+    p_flat: float | None = None
+    p_down: float | None = None
+    p_stress: float | None = None
+    stress_probability_threshold: float | None = None
+    model_version: str | None = None
+    thresholds: dict[str, Any] | None = None
+    probability_calibrated: bool | None = None
+
+
 @router.get("/data-status")
 def get_data_status(request: Request) -> dict[str, Any]:
     return _service(request).data_status(load_settings().symbols)
@@ -61,13 +84,13 @@ def get_replay(
     )
 
 
-@router.get("/meter/{symbol}")
+@router.get("/meter/{symbol}", response_model=LiquidityMeterResponse)
 def get_meter(
     request: Request,
     symbol: str,
     timestamp_utc: datetime | None = Query(None),
     horizon_seconds: int = Query(5, ge=1, le=60),
-) -> dict[str, Any]:
+) -> LiquidityMeterResponse:
     return _service(request).meter(_symbol(symbol), timestamp_utc.isoformat() if timestamp_utc is not None else None, horizon_seconds)
 
 
@@ -79,8 +102,8 @@ class PredictRequest(BaseModel):
     quality: dict[str, Any] = Field(default_factory=dict)
 
 
-@router.post("/predict")
-def predict(request: Request, payload: PredictRequest) -> dict[str, Any]:
+@router.post("/predict", response_model=LiquidityMeterResponse)
+def predict(request: Request, payload: PredictRequest) -> LiquidityMeterResponse:
     symbol = _symbol(payload.symbol)
     return _service(request).predict_features(
         symbol,

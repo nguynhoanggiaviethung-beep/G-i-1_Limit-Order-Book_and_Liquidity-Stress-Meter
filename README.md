@@ -4,7 +4,7 @@ Research and replay dashboard for short-horizon cryptocurrency market microstruc
 
 ## Research scope
 
-- Prospective Binance Spot BTCUSDT and ETHUSDT L2 depth/trade captures. Binance REST does not backfill historical L2 depth; no historical 2025 L2 archive is present in this checkout.
+- Prospective Binance Spot BTCUSDT and ETHUSDT L2 depth/trade captures remain the primary study. Binance REST does not backfill historical L2 depth. An optional external CryptoHFTData archive supports a separate historical pilot; it is downloaded locally and is not bundled in Git.
 - Replay into a valid one-second grid with the top 20 bid and ask levels. Sequence gaps invalidate samples until a complete snapshot restores the book.
 - Primary horizon: 5 seconds. Sensitivity horizons: 1 and 10 seconds.
 - Primary liquidity-stress label: train-only composite of unusually wide spread, high price impact, low depth, or high realized volatility. This avoids a discrete one-tick spread threshold producing too few positive samples.
@@ -26,7 +26,7 @@ data_processed/lob/grid/
 
 The pipeline separates immutable source messages under `data_raw/`, normalized replay events under `data_interim/`, and grids/features under `data_processed/`. Replay accepts chronologically ordered JSONL/JSONL.GZ with canonical `snapshot`, `depth_update`, and `trade` records or native Binance Spot events. Binance REST aggregate trades cannot reconstruct historical L2 books. See [research_design.md](docs/research_design.md) and [data_dictionary.md](docs/data_dictionary.md) for the full contract.
 
-This checkout has a short live capture from 2026-10-21, but no historical L2 archive or trained classification artifacts. The 10-minute capture is enough to verify replay and the dashboard; it is not enough for the frozen weekly classifier study. Continue collecting data to cover at least one full training week before 2026-11-02, the weekly development folds through 2026-11-22, and the untouched test week of 2026-11-23 through 2026-11-29. The live collector cannot recreate earlier order-book history. Until compatible data and trained models are available, meter probabilities return `unavailable` with a reason; the dashboard does not fill in demo probabilities.
+The live capture already in this checkout contains 750 valid BTCUSDT one-second rows from 2026-10-21 through 2026-10-22. The separate historical-archive pilot for 2026-09-28 through 2026-10-18 has been replayed, validated, and trained for BTCUSDT and ETHUSDT. It uses one train week, one validation week, and one untouched historical holdout week; it does not replace the configured prospective study (first validation week 2026-11-02, development through 2026-11-22, final test 2026-11-23 through 2026-11-29). Pilot artifacts are under `backend/artifacts/meter/<SYMBOL>/`, with aggregate evaluation under `outputs/tables/historical_archive_pilot/<SYMBOL>/`. See [historical_archive_pilot.md](docs/historical_archive_pilot.md) for results, source terms, and exact commands. The live collector itself cannot recreate earlier order-book history. Restart the API after training so it loads the artifacts. Predictions are still unavailable when the selected symbol/time has no recent valid book in the app's configured replay grid; the historical archive grid is isolated and is not served by the dashboard.
 
 ## Setup
 
@@ -81,7 +81,7 @@ $EVENTS = Read-Host "Paste the normalized event folder ending in \events\symbol=
 & $PY backend\scripts\build_lob_classification_dataset.py --symbol BTCUSDT
 ```
 
-Repeat for ETHUSDT as needed. The dashboard can replay the normalized grid; prediction probabilities remain unavailable until compatible models are trained. Live collection begins at capture time and cannot backfill historical L2.
+Repeat for ETHUSDT as needed. After replaying and validating the captured data, the dashboard can show its book and predictions when a compatible trained artifact exists and the selected time has a recent valid book. The historical pilot artifacts are already trained, but its provider archive remains isolated from the dashboard. Live collection begins at capture time and cannot backfill historical L2.
 
 To download historical trade flow only, use the public aggregate-trade endpoint:
 
@@ -133,12 +133,12 @@ The DeepLOB run uses the same weekly development/final-test boundaries and compa
 - `GET /api/v1/data-status` — available symbols, partitions, dates, and row counts.
 - `GET /api/v1/replay/{symbol}?start=&end=&depth=&limit=` — historical one-second book snapshots.
 - `GET /api/v1/replay/{symbol}/at?timestamp_utc=&depth=` — latest valid snapshot at or before a UTC timestamp.
-- `GET /api/v1/meter/{symbol}?timestamp_utc=&horizon_seconds=` — direction probabilities, stress probability, spread, imbalance, OFI, model version, and quality flags.
+- `GET /api/v1/meter/{symbol}?timestamp_utc=&horizon_seconds=` — direction probabilities, stress probability and its artifact-selected `stress_probability_threshold`, spread, imbalance, OFI, model version, and quality flags.
 - `POST /api/v1/predict` — score a supplied feature row with the saved artifact.
 - `GET /api/v1/models` — trained artifact availability and summary metrics.
 - `GET /api/v1/evaluation/{symbol}` — out-of-sample metrics by horizon and regime.
 
-Use ISO-8601 UTC timestamps; malformed timestamps are rejected with HTTP 422. `/replay/{symbol}/at` and timestamped `/meter/{symbol}` refuse snapshots older than the configured two-second limit. `/predict` and the meter include missing model features in `quality`; they return `unavailable` when the missing fraction exceeds 10%. API reads use a small partition cache. If data, labels, or trained models are missing, responses carry `status: "unavailable"` and a reason.
+Use ISO-8601 UTC timestamps; malformed timestamps are rejected with HTTP 422. `/replay/{symbol}/at` and timestamped `/meter/{symbol}` refuse snapshots older than the configured two-second limit. `/predict` and the meter include missing model features in `quality`; they return `unavailable` when the missing fraction exceeds 10% or the supplied book is invalid. API reads use a small partition cache. If data, labels, or trained models are missing, responses carry `status: "unavailable"` and a reason.
 
 ## Code map
 

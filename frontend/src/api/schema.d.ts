@@ -152,6 +152,53 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /** LiquidityMeterResponse */
+        LiquidityMeterResponse: {
+            /** Schema */
+            schema: string;
+            /** Symbol */
+            symbol: string;
+            /** Timestamp Utc */
+            timestamp_utc?: string | null;
+            /** Horizon Seconds */
+            horizon_seconds: number;
+            /** Status */
+            status: string;
+            /** Reason */
+            reason?: string | null;
+            /** Spread */
+            spread?: string | null;
+            /** Depth Imbalance */
+            depth_imbalance?: {
+                [key: string]: number | null;
+            } | null;
+            /** Ofi 5S */
+            ofi_5s?: number | null;
+            /** Quality */
+            quality?: {
+                [key: string]: unknown;
+            };
+            /** P Up */
+            p_up?: number | null;
+            /** P Flat */
+            p_flat?: number | null;
+            /** P Down */
+            p_down?: number | null;
+            /** P Stress */
+            p_stress?: number | null;
+            /** Stress Probability Threshold */
+            stress_probability_threshold?: number | null;
+            /** Model Version */
+            model_version?: string | null;
+            /** Thresholds */
+            thresholds?: {
+                [key: string]: unknown;
+            } | null;
+            /** Probability Calibrated */
+            probability_calibrated?: boolean | null;
+        } & {
+            [key: string]: unknown;
+        };
         /** PredictRequest */
         PredictRequest: {
             /** Symbol */
@@ -332,9 +379,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["LiquidityMeterResponse"];
                 };
             };
             /** @description Validation Error */
@@ -367,9 +412,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["LiquidityMeterResponse"];
                 };
             };
             /** @description Validation Error */

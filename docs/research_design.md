@@ -29,7 +29,7 @@ The study tests whether order-book state and order flow provide point-in-time in
 | Exchange extension | Coinbase cross-exchange validation is out of scope for the primary study |
 | Product mode | Read-only replay dashboard; an explicit CLI collector records live depth for later replay |
 
-The current 10-minute capture verifies collection and replay but does not cover the configured training, validation, and final-test weeks. The collector cannot backfill missed L2 intervals. The final report must state actual valid seconds, coverage, missing intervals, and sequence-gap recoveries; it must not describe absent periods as observed. Continue collecting from before the first validation week through the untouched test week.
+As audited on 2026-10-22, the processed grid contains 599 valid BTCUSDT seconds from 2026-10-21, with 100% coverage, zero dropped seconds, zero sequence gaps, and zero invalid-book events; ETHUSDT has no grid yet. There are no trained artifacts. This 10-minute capture verifies collection and replay but does not cover the configured training, validation, and final-test weeks. The collector cannot backfill missed L2 intervals. The final report must state actual valid seconds, coverage, missing intervals, and sequence-gap recoveries; it must not describe absent periods as observed. Continue collecting from before the first validation week through the untouched test week.
 
 ## Data and replay
 

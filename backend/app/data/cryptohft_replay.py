@@ -34,6 +34,8 @@ def normalize_event(record: dict[str, Any]) -> dict[str, Any]:
         kind = "snapshot"
     elif raw_kind in {"depthupdate", "depth_update", "depth"} or all(name in payload for name in ("U", "u", "b", "a")):
         kind = "depth_update"
+    elif raw_kind in {"trade_aggregate", "tradeaggregate"}:
+        kind = "trade_aggregate"
     elif (
         raw_kind in {"aggtrade", "trade", "agg_trade"}
         or all(name in payload for name in ("p", "q", "m"))
@@ -59,6 +61,13 @@ def normalize_event(record: dict[str, Any]) -> dict[str, Any]:
         event["q"] = payload.get("q", payload.get("quantity"))
         event["m"] = payload.get("m", payload.get("is_buyer_maker"))
         event["trade_timestamp_ms"] = int(payload.get("trade_timestamp_ms", payload.get("T", payload.get("trade_ts", timestamp))))
+    elif kind == "trade_aggregate":
+        event["aggressive_buy_volume"] = payload.get("aggressive_buy_volume", 0.0)
+        event["aggressive_sell_volume"] = payload.get("aggressive_sell_volume", 0.0)
+        event["trade_count"] = payload.get("trade_count", 0)
+        event["last_trade_price"] = payload.get("last_trade_price")
+        event["last_trade_time_ms"] = payload.get("last_trade_time_ms", timestamp)
+        event["last_exchange_trade_time_ms"] = payload.get("last_exchange_trade_time_ms")
     return event
 
 
@@ -84,10 +93,11 @@ class OneSecondBookReplay:
             "sequence_gap_count": 0, "invalid_book_event_count": 0,
             "snapshot_bootstraps": 0, "snapshot_recoveries": 0,
             "event_time_order_adjustments": 0, "max_event_time_lateness_ms": 0,
+            "provider_receive_time_adjustments": 0, "max_provider_receive_time_regression_ms": 0.0,
         }
-        self.daily_qa: dict[str, dict[str, int]] = {}
+        self.daily_qa: dict[str, dict[str, int | float]] = {}
 
-    def _daily_counter(self, second: int | None = None, timestamp_ms: int | None = None) -> dict[str, int]:
+    def _daily_counter(self, second: int | None = None, timestamp_ms: int | None = None) -> dict[str, int | float]:
         if timestamp_ms is None:
             timestamp_ms = int(second or 0) * 1000
         day = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).date().isoformat()
@@ -96,6 +106,7 @@ class OneSecondBookReplay:
             "sequence_gap_count": 0, "invalid_book_event_count": 0,
             "snapshot_bootstraps": 0, "snapshot_recoveries": 0,
             "event_time_order_adjustments": 0, "max_event_time_lateness_ms": 0,
+            "provider_receive_time_adjustments": 0, "max_provider_receive_time_regression_ms": 0.0,
         })
 
     def _reset_bucket(self) -> None:
@@ -107,6 +118,7 @@ class OneSecondBookReplay:
         self.trade_count = 0
         self.last_trade_price: str | None = None
         self.last_trade_time_ms: int | None = None
+        self.last_trade_exchange_time_ms: int | None = None
         self.first_update_id: int | None = None
         self.last_update_id: int | None = None
 
@@ -115,6 +127,17 @@ class OneSecondBookReplay:
         if event.get("symbol") and event["symbol"] != self.symbol:
             raise ValueError(f"Event symbol {event['symbol']} does not match replay symbol {self.symbol}")
         timestamp = event["event_time_ms"]
+        provider_lateness_ms = float(event.get("provider_receive_time_regression_ms") or 0.0)
+        if provider_lateness_ms > 0:
+            self.qa["provider_receive_time_adjustments"] += 1
+            self.qa["max_provider_receive_time_regression_ms"] = max(
+                self.qa["max_provider_receive_time_regression_ms"], provider_lateness_ms
+            )
+            daily_qa = self._daily_counter(timestamp_ms=timestamp)
+            daily_qa["provider_receive_time_adjustments"] += 1
+            daily_qa["max_provider_receive_time_regression_ms"] = max(
+                daily_qa["max_provider_receive_time_regression_ms"], provider_lateness_ms
+            )
         if self.last_input_timestamp_ms is not None and timestamp < self.last_input_timestamp_ms:
             lateness_ms = self.last_input_timestamp_ms - timestamp
             if lateness_ms > MAX_EVENT_TIME_REORDER_MS:
@@ -150,6 +173,8 @@ class OneSecondBookReplay:
             self._install_snapshot(event)
         elif event["kind"] == "depth_update":
             self._apply_depth_update(event)
+        elif event["kind"] == "trade_aggregate":
+            self._apply_trade_aggregate(event)
         else:
             self._apply_trade(event)
 
@@ -173,6 +198,8 @@ class OneSecondBookReplay:
             self.book = None
             raise ValueError(f"Invalid order-book snapshot: {exc}") from exc
         self.book.event_time_ms = int(event.get("book_event_time_ms", event["event_time_ms"]))
+        exchange_time = event.get("exchange_event_time_ms")
+        self.book.transaction_time_ms = int(exchange_time) if exchange_time is not None else None
         self.book.received_at_utc = event.get("received_at_utc")
         if not self._snapshot_seen:
             self.qa["snapshot_bootstraps"] += 1
@@ -217,7 +244,10 @@ class OneSecondBookReplay:
                 "best_ask": str(self.book.best_ask[0]),
                 "best_ask_qty": str(self.book.best_ask[1]),
             }
-            update = {"U": event["U"], "u": event["u"], "b": event.get("b", []), "a": event.get("a", []), "E": event.get("E"), "T": event.get("T")}
+            update = {
+                "U": event["U"], "u": event["u"], "b": event.get("b", []), "a": event.get("a", []),
+                "E": event.get("E"), "T": event.get("exchange_event_time_ms", event.get("T")),
+            }
             bid_add, bid_delete = self._change_intensity(self.book, update["b"], "bid")
             ask_add, ask_delete = self._change_intensity(self.book, update["a"], "ask")
             applied = self.book.apply_update(update)
@@ -266,7 +296,31 @@ class OneSecondBookReplay:
                 self.aggressive_buy_volume += quantity
             self.last_trade_price = str(event["p"])
             self.last_trade_time_ms = int(event.get("trade_timestamp_ms", event["event_time_ms"]))
+            exchange_time = event.get("exchange_trade_time_ms")
+            self.last_trade_exchange_time_ms = int(exchange_time) if exchange_time is not None else None
             self.trade_count += 1
+        except (KeyError, TypeError, ValueError):
+            return
+
+    def _apply_trade_aggregate(self, event: dict[str, Any]) -> None:
+        try:
+            buy_volume = float(event["aggressive_buy_volume"])
+            sell_volume = float(event["aggressive_sell_volume"])
+            count = int(event["trade_count"])
+            if not isfinite(buy_volume) or not isfinite(sell_volume) or buy_volume < 0 or sell_volume < 0 or count < 0:
+                return
+            self.aggressive_buy_volume += buy_volume
+            self.aggressive_sell_volume += sell_volume
+            self.trade_count += count
+            if count:
+                price = event.get("last_trade_price")
+                if price is not None:
+                    price_value = float(price)
+                    if isfinite(price_value) and price_value > 0:
+                        self.last_trade_price = str(price)
+                self.last_trade_time_ms = int(event.get("last_trade_time_ms", event["event_time_ms"]))
+                exchange_time = event.get("last_exchange_trade_time_ms")
+                self.last_trade_exchange_time_ms = int(exchange_time) if exchange_time is not None else None
         except (KeyError, TypeError, ValueError):
             return
 
@@ -295,6 +349,7 @@ class OneSecondBookReplay:
             "symbol": self.symbol,
             "timestamp_utc": _iso_utc(sample_time_ms),
             "event_time_utc": _iso_utc(self.book.event_time_ms),
+            "exchange_event_time_utc": _iso_utc(self.book.transaction_time_ms),
             "received_at_utc": self.book.received_at_utc,
             "first_update_id": self.first_update_id,
             "last_update_id": self.last_update_id or self.book.last_update_id,
@@ -307,6 +362,7 @@ class OneSecondBookReplay:
             "trade_count_1s": self.trade_count,
             "last_trade_price": self.last_trade_price,
             "last_trade_time_utc": _iso_utc(self.last_trade_time_ms),
+            "last_trade_exchange_time_utc": _iso_utc(self.last_trade_exchange_time_ms),
             "addition_intensity_1s": self.addition_intensity,
             "cancellation_intensity_1s": self.cancellation_intensity,
             "tick_size": self.tick_size,

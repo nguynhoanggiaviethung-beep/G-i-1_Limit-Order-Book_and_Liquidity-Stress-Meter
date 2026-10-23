@@ -9,6 +9,8 @@ import pandas as pd
 
 from app.labels.direction import valid_future_origins
 
+STRESS_LABEL_SCHEMA_VERSION = "liquidity-stress.v1"
+
 
 @dataclass(frozen=True)
 class StressThresholds:
@@ -37,22 +39,34 @@ def fit_stress_thresholds(
         raise ValueError("Stress quantiles must satisfy 0 < depth_quantile < upper_quantile < 1")
     spread_name = next((name for name in ("spread_ticks", "absolute_spread", "relative_spread_bps") if name in training_frame), None)
     depth_name = next((name for name in ("depth_notional_10", "depth_qty_10") if name in training_frame), None)
-    if spread_name is None or depth_name is None:
-        raise ValueError("Stress thresholds need spread_ticks (or absolute_spread) and top-10 depth")
+    impact_name = next((name for name in ("price_impact_bps", "impact_bps") if name in training_frame), None)
+    required = (spread_name, impact_name, depth_name, "rv_60s")
+    if any(name is None or name not in training_frame for name in required):
+        raise ValueError("Stress thresholds need spread, price impact, top-10 depth, and rv_60s")
     spread_series = pd.to_numeric(training_frame[spread_name], errors="coerce")
     depth_series = pd.to_numeric(training_frame[depth_name], errors="coerce")
-    spread = spread_series.dropna().to_numpy()
-    impact_source = training_frame.get("price_impact_bps", training_frame.get("impact_bps"))
-    impact = pd.to_numeric(impact_source, errors="coerce").dropna().to_numpy()
-    depth = depth_series.dropna().to_numpy()
-    rv = pd.to_numeric(training_frame["rv_60s"], errors="coerce").dropna().to_numpy()
+    spread_values = spread_series.to_numpy(dtype=float)
+    spread = spread_values[np.isfinite(spread_values)]
+    impact_source = training_frame[impact_name]
+    impact_values = pd.to_numeric(impact_source, errors="coerce").to_numpy(dtype=float)
+    impact = impact_values[np.isfinite(impact_values)]
+    depth_values = depth_series.to_numpy(dtype=float)
+    depth = depth_values[np.isfinite(depth_values)]
+    rv_series = pd.to_numeric(training_frame["rv_60s"], errors="coerce")
+    rv_values = rv_series.to_numpy(dtype=float)
+    rv = rv_values[np.isfinite(rv_values)]
     if min(map(len, (spread, impact, depth, rv))) == 0:
         raise ValueError("Stress thresholds need spread, price impact, depth_qty_10, and rv_60s")
     thresholds = (float(np.quantile(spread, upper_quantile)), float(np.quantile(impact, upper_quantile)),
                   float(np.quantile(depth, depth_quantile)), float(np.quantile(rv, upper_quantile)))
     impact_series = pd.to_numeric(impact_source, errors="coerce")
-    rv_series = pd.to_numeric(training_frame["rv_60s"], errors="coerce")
-    valid = spread_series.notna() & impact_series.notna() & depth_series.notna() & rv_series.notna()
+    valid = pd.Series(
+        np.isfinite(spread_values)
+        & np.isfinite(impact_values)
+        & np.isfinite(depth_values)
+        & np.isfinite(rv_values),
+        index=training_frame.index,
+    )
     positive = (
         (spread_series > thresholds[0])
         | (impact_series > thresholds[1])
@@ -86,7 +100,7 @@ def fit_primary_stress_thresholds(
     values = pd.to_numeric(training_frame[metric], errors="coerce")
     if "book_valid" in training_frame:
         values = values.where(training_frame["book_valid"].fillna(False).astype(bool))
-    valid = values.notna()
+    valid = np.isfinite(values.to_numpy(dtype=float))
     prevalence = float((values.loc[valid] > threshold).mean()) if valid.any() else float("nan")
     return StressThresholds(
         spread_upper=threshold,
@@ -119,6 +133,8 @@ def make_stress_labels(frame: pd.DataFrame, horizon_seconds: int, thresholds: St
         raise ValueError("Stress labels need spread and top-10 depth features")
     spread = pd.to_numeric(frame[spread_name], errors="coerce").to_numpy(dtype=float)
     impact_name = "price_impact_bps" if "price_impact_bps" in frame else "impact_bps"
+    if impact_name not in frame or "rv_60s" not in frame:
+        raise ValueError("Composite stress labels need price impact and rv_60s features")
     impact = pd.to_numeric(frame[impact_name], errors="coerce").to_numpy(dtype=float)
     depth = pd.to_numeric(frame[depth_name], errors="coerce").to_numpy(dtype=float)
     rv = pd.to_numeric(frame["rv_60s"], errors="coerce").to_numpy(dtype=float)
@@ -163,7 +179,8 @@ def fit_spread_only_threshold(training_frame: pd.DataFrame, quantile: float = 0.
     values = pd.to_numeric(training_frame[metric], errors="coerce")
     if "book_valid" in training_frame:
         values = values.where(training_frame["book_valid"].fillna(False).astype(bool))
-    values = values.dropna().to_numpy(dtype=float)
+    numeric_values = values.to_numpy(dtype=float)
+    values = numeric_values[np.isfinite(numeric_values)]
     if not len(values):
         raise ValueError("No valid training spread observations are available")
     return metric, float(np.quantile(values, quantile))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import time
@@ -28,6 +29,7 @@ from scripts.run_lob_classification import (
     _current_stress_state,
     _direction_persistence_predictions,
     _load_features,
+    _study_provenance,
     _stress_threshold_rows,
 )
 
@@ -81,16 +83,15 @@ def _fit_deeplob(frame, labels, indices, lookback, seed, max_train_rows):
 
 
 def _evaluate_fold(task, frame, labels, train_indices, validation_indices, lookback, week, seed, max_train_rows):
-    deep_model, _ = _fit_deeplob(frame, labels, train_indices, lookback, seed, max_train_rows)
+    deep_model, training_endpoints = _fit_deeplob(frame, labels, train_indices, lookback, seed, max_train_rows)
     validation_indices = _evenly_spaced(validation_indices, MAX_FOLD_VALIDATION_ROWS)
     x_sequence, y_valid, endpoints = _build_samples(frame, labels, validation_indices, lookback)
     if len(y_valid) < 30:
         return None
     x_table = frame.loc[endpoints, LOB_CLASSIFICATION_FEATURES]
     logistic_model = make_classifiers(task)["logistic"]
-    train_sample = _sample_indices(labels, train_indices, max_train_rows, seed)
-    x_train = frame.loc[train_sample, LOB_CLASSIFICATION_FEATURES]
-    y_train = labels.loc[train_sample]
+    x_train = frame.loc[training_endpoints, LOB_CLASSIFICATION_FEATURES]
+    y_train = labels.loc[training_endpoints]
     logistic_model.fit(x_train, y_train.to_numpy())
     class_order = DIRECTION_CLASSES if task == "direction" else STRESS_CLASSES
     deep_prediction = deep_model.predict(x_sequence)
@@ -123,10 +124,12 @@ def _runtime_ms(model, sequences: np.ndarray) -> dict[str, float | int]:
 
 
 def run_symbol(symbol: str, horizons: tuple[int, ...], settings, allow_repeat: bool) -> dict:
-    frame = _load_features(symbol)
-    times = pd.to_datetime(frame["timestamp_utc"], utc=True)
+    all_frame = _load_features(symbol)
+    all_times = pd.to_datetime(all_frame["timestamp_utc"], utc=True)
     test_start = pd.Timestamp(settings.lob_untouched_test_start_utc)
     test_end = pd.Timestamp(settings.lob_untouched_test_end_utc) + pd.Timedelta(seconds=1)
+    frame = all_frame.loc[all_times < test_start].copy().reset_index(drop=True)
+    times = pd.to_datetime(frame["timestamp_utc"], utc=True)
     folds = expanding_week_folds(settings.lob_first_validation_week_utc, settings.lob_development_end_utc)
     if not folds:
         raise RuntimeError("No full weekly walk-forward validation folds are configured")
@@ -135,13 +138,22 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], settings, allow_repeat: b
     first_train = frame.loc[times < first_cutoff]
     if first_train.empty:
         raise RuntimeError(f"Insufficient data before validation week {folds[0]} to fit {symbol} DeepLOB")
-    test_rows = (times >= test_start) & (times < test_end)
-    if not test_rows.any():
-        raise RuntimeError(
-            f"No data exists in the frozen final-test week {settings.lob_untouched_test_start_utc[:10]}"
-            f" through {settings.lob_untouched_test_end_utc[:10]}; collect the configured capture window first"
-        )
-    result: dict[str, object] = {"symbol": symbol, "data_rows": int(len(frame)), "horizons": {}}
+    result: dict[str, object] = {
+        "symbol": symbol,
+        "data_rows": int(len(all_frame)),
+        "development_rows": int(len(frame)),
+        "reproducibility": {
+            **_study_provenance(all_frame, settings, horizons),
+            "random_seeds": {
+                "sklearn_estimators": 42,
+                "classical_train_row_sampling": 42,
+                "deeplob_fold_direction": "1000 + horizon_seconds",
+                "deeplob_fold_stress": "2000 + horizon_seconds",
+                "deeplob_final_fit": "3000 + horizon_seconds",
+            },
+        },
+        "horizons": {},
+    }
 
     for horizon in horizons:
         delta = fit_direction_delta(first_train, horizon, settings.lob_direction_delta_quantile)
@@ -186,21 +198,43 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], settings, allow_repeat: b
         stress_labels = make_stress_labels(frame, horizon, final_thresholds).astype("Int64")
         direction_train = np.flatnonzero((times < dev_cutoff) & direction_labels.notna())
         stress_train = np.flatnonzero((times < dev_cutoff) & stress_labels.notna())
-        direction_test = np.flatnonzero((times >= test_start) & (times < test_end - pd.Timedelta(seconds=horizon)) & direction_labels.notna())
-        stress_test = np.flatnonzero((times >= test_start) & (times < test_end - pd.Timedelta(seconds=horizon)) & stress_labels.notna())
         train_positive_rate = float(stress_labels.iloc[stress_train].mean()) if len(stress_train) else float("nan")
-        if not settings.lob_stress_min_positive_rate <= train_positive_rate <= settings.lob_stress_max_positive_rate:
+        if not np.isfinite(train_positive_rate) or not settings.lob_stress_min_positive_rate <= train_positive_rate <= settings.lob_stress_max_positive_rate:
             raise RuntimeError(f"{symbol} h={horizon}: development stress prevalence {train_positive_rate:.4f} is outside the configured range")
+
+        # Keep the frozen test week outside label creation until the development
+        # folds and prevalence guard have finished.
+        test_context_start = test_start - pd.Timedelta(seconds=settings.lob_deeplob_lookback_seconds - 1)
+        test_rows = (all_times >= test_context_start) & (all_times < test_end)
+        test_frame = all_frame.loc[test_rows].copy().reset_index(drop=True)
+        if test_frame.empty:
+            raise RuntimeError(
+                f"No data exists in the frozen final-test week {settings.lob_untouched_test_start_utc[:10]}"
+                f" through {settings.lob_untouched_test_end_utc[:10]}; collect the configured capture window first"
+            )
+        test_times = pd.to_datetime(test_frame["timestamp_utc"], utc=True)
+        direction_test_labels = make_direction_labels(test_frame, horizon, delta)
+        stress_test_labels = make_stress_labels(test_frame, horizon, final_thresholds).astype("Int64")
+        direction_test = np.flatnonzero(
+            (test_times >= test_start)
+            & (test_times < test_end - pd.Timedelta(seconds=horizon))
+            & direction_test_labels.notna()
+        )
+        stress_test = np.flatnonzero(
+            (test_times >= test_start)
+            & (test_times < test_end - pd.Timedelta(seconds=horizon))
+            & stress_test_labels.notna()
+        )
 
         task_results = {}
         final_models = {}
-        for task, labels, train_indices, test_indices in (
-            ("direction", direction_labels, direction_train, direction_test),
-            ("stress", stress_labels, stress_train, stress_test),
+        for task, train_labels, heldout_labels, train_indices, test_indices in (
+            ("direction", direction_labels, direction_test_labels, direction_train, direction_test),
+            ("stress", stress_labels, stress_test_labels, stress_train, stress_test),
         ):
             selected_test = _evenly_spaced(test_indices, MAX_FINAL_TEST_ROWS)
-            model, training_endpoints = _fit_deeplob(frame, labels, train_indices, settings.lob_deeplob_lookback_seconds, 3000 + horizon, settings.lob_deeplob_max_train_rows)
-            x_test, y_test, test_endpoints = _build_samples(frame, labels, selected_test, settings.lob_deeplob_lookback_seconds)
+            model, training_endpoints = _fit_deeplob(frame, train_labels, train_indices, settings.lob_deeplob_lookback_seconds, 3000 + horizon, settings.lob_deeplob_max_train_rows)
+            x_test, y_test, test_endpoints = _build_samples(test_frame, heldout_labels, selected_test, settings.lob_deeplob_lookback_seconds)
             if len(y_test) < 30:
                 raise RuntimeError(f"Only {len(y_test)} final-test {task} sequences remain for {symbol} h={horizon}")
             class_order = DIRECTION_CLASSES if task == "direction" else STRESS_CLASSES
@@ -211,10 +245,9 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], settings, allow_repeat: b
                     probability[:, class_order.index(label)] = raw_probability[:, column]
             prediction = model.predict(x_test)
             logistic = make_classifiers(task)["logistic"]
-            logistic_train = _sample_indices(labels, train_indices, settings.lob_deeplob_max_train_rows, 3000 + horizon)
-            x_logistic_train = frame.loc[logistic_train, LOB_CLASSIFICATION_FEATURES]
-            logistic.fit(x_logistic_train, labels.loc[logistic_train].to_numpy())
-            x_logistic_test = frame.loc[test_endpoints, LOB_CLASSIFICATION_FEATURES]
+            x_logistic_train = frame.loc[training_endpoints, LOB_CLASSIFICATION_FEATURES]
+            logistic.fit(x_logistic_train, train_labels.loc[training_endpoints].to_numpy())
+            x_logistic_test = test_frame.loc[test_endpoints, LOB_CLASSIFICATION_FEATURES]
             logistic_prediction = logistic.predict(x_logistic_test)
             logistic_probability = _align_probabilities(logistic, x_logistic_test, class_order)
             metrics = classification_metrics(y_test, prediction, probability, labels=list(class_order), stress=(task == "stress"))
@@ -222,24 +255,32 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], settings, allow_repeat: b
             paired_vs_logistic = paired_classification_tests(
                 y_test, prediction, logistic_prediction, probability, logistic_probability,
                 stress=(task == "stress"), horizon_seconds=horizon, baseline_name="logistic",
-                timestamps=times.iloc[test_endpoints],
+                timestamps=test_times.iloc[test_endpoints],
             )
             if task == "direction":
-                persistence_all = _direction_persistence_predictions(frame, delta)
+                persistence_all = _direction_persistence_predictions(test_frame, delta)
                 persistence = persistence_all[test_endpoints]
                 persistence_probability = np.column_stack([persistence == label for label in DIRECTION_CLASSES]).astype(float)
+                persistence_mask = np.ones(len(test_endpoints), dtype=bool)
             else:
-                persistence = _current_stress_state(frame.iloc[test_endpoints], final_thresholds)
+                persistence_states = _current_stress_state(test_frame.iloc[test_endpoints], final_thresholds)
+                persistence_mask = persistence_states.notna().to_numpy()
+                persistence = persistence_states.loc[persistence_states.notna()].astype(int).to_numpy()
                 persistence_probability = np.column_stack([1 - persistence, persistence]).astype(float)
             paired_vs_persistence = paired_classification_tests(
-                y_test, prediction, persistence, probability, persistence_probability,
+                y_test[persistence_mask], prediction[persistence_mask], persistence,
+                probability[persistence_mask], persistence_probability,
                 stress=(task == "stress"), horizon_seconds=horizon,
-                timestamps=times.iloc[test_endpoints],
+                timestamps=test_times.iloc[test_endpoints[persistence_mask]],
             )
             metrics.update({
                 "logistic_baseline": logistic_metrics,
                 "paired_tests_vs_logistic": paired_vs_logistic,
                 "paired_tests_vs_persistence": paired_vs_persistence,
+                "persistence_baseline": classification_metrics(
+                    y_test[persistence_mask], persistence, persistence_probability,
+                    labels=list(class_order), stress=(task == "stress"),
+                ) if persistence_mask.any() else {"n": 0, "status": "unavailable", "reason": "No complete current stress state is available"},
                 "test_rows_sampled": int(len(y_test)),
                 "test_rows_available": int(len(test_indices)),
                 "runtime": _runtime_ms(model, x_test),
@@ -260,10 +301,18 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], settings, allow_repeat: b
             "stress_thresholds": final_thresholds.as_dict(),
             "stress_positive_rate_train": train_positive_rate,
             "stress_positive_rate_by_month_development": monthly_positive_rates(stress_labels.loc[times < dev_cutoff], times.loc[times < dev_cutoff]),
-            "stress_positive_rate_by_month_test": monthly_positive_rates(stress_labels.loc[stress_test], times.loc[stress_test]),
+            "stress_positive_rate_by_month_test": monthly_positive_rates(stress_test_labels.iloc[stress_test], test_times.iloc[stress_test]),
             "deeplob_and_logistic_training_row_cap": settings.lob_deeplob_max_train_rows,
             "final_test": task_results,
             "artifact_directory": str(directory.relative_to(REPOSITORY_ROOT)),
+            "model_version": f"deeplob-direction-stress-h{horizon}-{test_start.date().isoformat()}",
+            "final_test_data_sha256": hashlib.sha256(pd.util.hash_pandas_object(
+                test_frame.loc[
+                    (test_times >= test_start) & (test_times < test_end),
+                    ["timestamp_utc", *LOB_CLASSIFICATION_FEATURES],
+                ],
+                index=False,
+            ).values.tobytes()).hexdigest(),
         }
     return result
 

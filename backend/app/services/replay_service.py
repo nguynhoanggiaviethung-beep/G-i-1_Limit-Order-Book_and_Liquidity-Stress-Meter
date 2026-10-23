@@ -108,7 +108,11 @@ class ReplayService:
         requested = _utc_timestamp(timestamp)
         frame = self.store.read(symbol, start=requested.normalize().isoformat(), end=timestamp, limit=10000)
         if frame.empty:
-            return {"schema": "replay_snapshot.v1", "symbol": symbol, "status": "unavailable", "reason": "No valid book at or before the requested time", "snapshot_age_seconds": None, "snapshot": None}
+            return {
+                "schema": "replay_snapshot.v1", "symbol": symbol, "status": "unavailable",
+                "reason": f"No replay book for {symbol.upper()} at the requested time; capture and replay this symbol, then choose a time inside its capture window",
+                "snapshot_age_seconds": None, "snapshot": None,
+            }
         row = frame.iloc[-1]
         age_seconds = max(0.0, (requested - pd.Timestamp(row["timestamp_utc"])).total_seconds())
         if age_seconds > self.max_staleness_seconds:
@@ -160,12 +164,19 @@ class ReplayService:
 
     def predict_features(self, symbol: str, timestamp: str | None, horizon_seconds: int, feature_values: dict[str, Any], quality: dict[str, Any] | None = None) -> dict[str, Any]:
         bundle = self._bundle(symbol, horizon_seconds)
+        stress_probability_threshold = _number(bundle.get("stress_probability_threshold")) if bundle is not None else None
         columns = list((bundle or {}).get("feature_columns") or LOB_CLASSIFICATION_FEATURES)
         values = {column: _number(feature_values.get(column)) for column in columns}
         missing_features = [column for column, value in values.items() if value is None]
         missing_fraction = len(missing_features) / len(columns) if columns else 1.0
+        supplied_quality = quality or {}
+        book_valid_value = supplied_quality.get("book_valid")
+        if book_valid_value is None:
+            book_valid_value = feature_values.get("book_valid")
+        book_valid = _truthy(book_valid_value, True)
         quality_details = {
-            **(quality or {"book_valid": True}),
+            **(supplied_quality or {"book_valid": book_valid}),
+            "book_valid": book_valid,
             "missing_features": missing_features,
             "missing_feature_count": len(missing_features),
             "missing_feature_fraction": missing_fraction,
@@ -183,10 +194,13 @@ class ReplayService:
             "p_flat": None,
             "p_down": None,
             "p_stress": None,
-            "model_version": None,
+            "stress_probability_threshold": stress_probability_threshold,
+            "model_version": bundle.get("model_version") if bundle is not None else None,
         }
         if bundle is None:
             return {**base, "status": "unavailable", "reason": "No trained artifact is available for this symbol and horizon"}
+        if not book_valid:
+            return {**base, "status": "unavailable", "reason": "The supplied order book is invalid"}
         if missing_fraction > self.max_missing_feature_fraction:
             return {
                 **base,
@@ -247,18 +261,29 @@ class ReplayService:
             if frame.empty:
                 frame = self.store.read(symbol, start=requested.normalize().isoformat(), end=timestamp, limit=10000)
         if frame.empty:
-            return self.predict_features(symbol, timestamp, horizon_seconds, {}, {"book_valid": False, "reason": "No replay data is available"})
+            bundle = self._bundle(symbol, horizon_seconds)
+            return {
+                "schema": "liquidity_meter.v1", "symbol": symbol.upper(), "timestamp_utc": timestamp,
+                "horizon_seconds": int(horizon_seconds), "status": "unavailable",
+                "reason": f"No replay data is available for {symbol.upper()} at the requested time; capture and replay {symbol.upper()} data first",
+                "quality": {"book_valid": False, "reason": "No replay data is available"},
+                "p_up": None, "p_flat": None, "p_down": None, "p_stress": None,
+                "stress_probability_threshold": _number(bundle.get("stress_probability_threshold")) if bundle is not None else None,
+                "model_version": bundle.get("model_version") if bundle is not None else None,
+            }
         row = self.store.json_row(frame.iloc[-1])
         snapshot_timestamp = pd.Timestamp(row["timestamp_utc"])
         snapshot_age = max(0.0, (_utc_timestamp(timestamp) - snapshot_timestamp).total_seconds()) if timestamp is not None else 0.0
         if timestamp is not None and snapshot_age > self.max_staleness_seconds:
+            bundle = self._bundle(symbol, horizon_seconds)
             return {
                 "schema": "liquidity_meter.v1", "symbol": symbol.upper(), "timestamp_utc": timestamp,
                 "horizon_seconds": int(horizon_seconds), "status": "unavailable",
                 "reason": f"Latest valid book is {snapshot_age:.3f}s old (limit {self.max_staleness_seconds}s)",
                 "quality": {"book_valid": False, "snapshot_age_seconds": snapshot_age},
                 "p_up": None, "p_flat": None, "p_down": None, "p_stress": None,
-                "model_version": None,
+                "stress_probability_threshold": _number(bundle.get("stress_probability_threshold")) if bundle is not None else None,
+                "model_version": bundle.get("model_version") if bundle is not None else None,
             }
         impact_notional = float(self.impact_notionals.get(symbol.upper(), self.default_impact_notional))
         derived = compute_microstructure_features(row, impact_notional, self.tick_sizes.get(symbol.upper()))

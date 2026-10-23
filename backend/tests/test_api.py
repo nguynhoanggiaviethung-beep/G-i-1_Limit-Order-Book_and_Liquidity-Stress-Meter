@@ -10,6 +10,7 @@ from starlette.requests import Request
 
 from app.api.routes.health import health
 from app.api.routes.replay import (
+    LiquidityMeterResponse,
     PredictRequest,
     get_data_status,
     get_evaluation,
@@ -62,7 +63,8 @@ def service(monkeypatch):
 
 
 def test_active_api_contract_replaces_collector_routes(service):
-    paths = app.openapi()["paths"]
+    openapi = app.openapi()
+    paths = openapi["paths"]
     assert app.title == "Limit Order Book & Liquidity Stress Meter API"
     for path in (
         "/health",
@@ -82,6 +84,10 @@ def test_active_api_contract_replaces_collector_routes(service):
         if parameter["name"] == "timestamp_utc"
     )
     assert timestamp_parameter["schema"]["format"] == "date-time"
+    meter_ref = paths["/api/v1/meter/{symbol}"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+    meter_name = meter_ref.rsplit("/", 1)[-1]
+    meter_properties = openapi["components"]["schemas"][meter_name]["properties"]
+    assert {"p_up", "p_flat", "p_down", "p_stress", "stress_probability_threshold", "model_version", "quality"}.issubset(meter_properties)
 
 
 def test_health_reports_replay_availability(service):
@@ -114,12 +120,28 @@ def test_predict_request_rejects_invalid_timestamp():
         PredictRequest.model_validate({"symbol": "BTCUSDT", "features": {}, "timestamp_utc": "not-a-date"})
 
 
+def test_meter_response_model_preserves_artifact_threshold_and_schema_alias():
+    response = LiquidityMeterResponse.model_validate({
+        "schema": "liquidity_meter.v1",
+        "symbol": "BTCUSDT",
+        "timestamp_utc": None,
+        "horizon_seconds": 5,
+        "status": "unavailable",
+        "quality": {"book_valid": False},
+        "stress_probability_threshold": 0.37,
+    })
+    serialized = response.model_dump(by_alias=True)
+    assert serialized["schema"] == "liquidity_meter.v1"
+    assert serialized["stress_probability_threshold"] == 0.37
+
+
 def test_prediction_refuses_excessive_missing_features(monkeypatch):
     replay_service = ReplayService(max_missing_feature_fraction=0.1)
-    bundle = {"feature_columns": ["feature_a", "feature_b"], "direction_model": object(), "stress_model": object()}
+    bundle = {"feature_columns": ["feature_a", "feature_b"], "direction_model": object(), "stress_model": object(), "stress_probability_threshold": 0.37}
     monkeypatch.setattr(replay_service, "_bundle", lambda *_: bundle)
     response = replay_service.predict_features("BTCUSDT", None, 5, {})
     assert response["status"] == "unavailable"
+    assert response["stress_probability_threshold"] == 0.37
     assert response["quality"]["missing_features"] == ["feature_a", "feature_b"]
     assert response["quality"]["missing_feature_count"] == 2
 
@@ -138,12 +160,14 @@ def test_at_and_meter_refuse_stale_valid_rows(monkeypatch):
 
     replay_service = ReplayService(store=StoreStub(), max_staleness_seconds=2)
     monkeypatch.setattr(replay_service.feature_store, "read", lambda symbol, **kwargs: rows.copy())
+    monkeypatch.setattr(replay_service, "_bundle", lambda *_: {"stress_probability_threshold": 0.37})
     replay = replay_service.at("BTCUSDT", requested)
     meter = replay_service.meter("BTCUSDT", requested, 5)
     assert replay["status"] == "unavailable"
     assert replay["snapshot_age_seconds"] == 3
     assert meter["status"] == "unavailable"
     assert meter["quality"]["snapshot_age_seconds"] == 3
+    assert meter["stress_probability_threshold"] == 0.37
 
 
 def test_meter_reports_missing_flow_features_from_grid(monkeypatch):

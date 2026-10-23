@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import json
+import logging
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ from app.core.config import REPOSITORY_ROOT, load_settings
 
 
 DEFAULT_GRID_ROOT = load_settings().data_dir / "grid"
+logger = logging.getLogger(__name__)
 
 
 def _utc_timestamp(value: str | pd.Timestamp | None) -> pd.Timestamp | None:
@@ -196,7 +198,15 @@ class GridStore:
             frame = frame[frame["timestamp_utc"] >= start_ts]
         if end_ts is not None:
             frame = frame[frame["timestamp_utc"] <= end_ts]
-        frame = frame.sort_values("timestamp_utc").drop_duplicates("timestamp_utc", keep="last")
+        frame = frame.sort_values("timestamp_utc", kind="mergesort")
+        duplicate_count = int(frame.duplicated("timestamp_utc", keep="last").sum())
+        if duplicate_count:
+            logger.warning(
+                "Resolved %d duplicate replay timestamps for %s by keeping the last partition row",
+                duplicate_count,
+                symbol.upper(),
+            )
+        frame = frame.drop_duplicates("timestamp_utc", keep="last")
         if limit is not None:
             frame = frame.tail(max(0, int(limit)))
         return frame.reset_index(drop=True)

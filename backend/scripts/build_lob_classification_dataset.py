@@ -31,11 +31,13 @@ def build_partition_features(raw_frame: pd.DataFrame, previous_tail: pd.DataFram
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--settings", type=Path, default=REPOSITORY_ROOT / "config" / "settings.yaml", help="Settings file that selects the source grid and feature policy")
     parser.add_argument("--symbol", choices=("BTCUSDT", "ETHUSDT"), help="Build only one configured symbol")
     parser.add_argument("--impact-notional-usdt", type=float)
     args = parser.parse_args()
-    settings = load_settings()
-    store = GridStore()
+    settings_path = args.settings if args.settings.is_absolute() else REPOSITORY_ROOT / args.settings
+    settings = load_settings(settings_path)
+    store = GridStore(settings.data_dir / "grid")
     output_root = store.root.parent / "features"
     symbols = (args.symbol,) if args.symbol else settings.symbols
     found = 0

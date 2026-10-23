@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 import numpy as np
@@ -152,6 +153,9 @@ def classification_metrics(y_true, y_pred, probabilities=None, labels=None, stre
         "confusion_matrix": confusion_matrix(y_true, y_pred, labels=labels).tolist(),
         "labels": [str(label) for label in labels],
     }
+    if stress:
+        positives = (np.asarray(y_true) == 1).astype(int)
+        result["positive_rate"] = float(positives.mean()) if len(positives) else None
     if probabilities is not None:
         p = np.asarray(probabilities, dtype=float)
         if stress:
@@ -228,10 +232,10 @@ def expanding_week_folds(first_validation_week_utc: str, development_end_utc: st
     development_end = development_end.tz_convert("UTC")
     if first.weekday() != 0 or first != first.normalize():
         raise ValueError("First validation week must start Monday 00:00 UTC")
-    development_exclusive = development_end + pd.Timedelta(seconds=1)
+    development_exclusive = development_end + timedelta(seconds=1)
     if development_exclusive.weekday() != 0 or development_exclusive != development_exclusive.normalize():
         raise ValueError("Development must end on Sunday 23:59:59 UTC")
-    last_full_week = development_exclusive - pd.Timedelta(days=7)
+    last_full_week = development_exclusive - timedelta(days=7)
     if first > last_full_week:
         return ()
     return tuple(pd.date_range(first, last_full_week, freq="7D").strftime("%Y-%m-%d"))
@@ -240,5 +244,5 @@ def expanding_week_folds(first_validation_week_utc: str, development_end_utc: st
 def apply_embargo(train_mask: np.ndarray, timestamps: pd.Series, validation_start: pd.Timestamp, seconds: int) -> np.ndarray:
     """Drop training origins within the configured purge/embargo interval."""
     values = pd.to_datetime(timestamps, utc=True)
-    return train_mask & (values < validation_start - pd.Timedelta(seconds=seconds)).to_numpy()
+    return train_mask & (values < validation_start - timedelta(seconds=seconds)).to_numpy()
 
