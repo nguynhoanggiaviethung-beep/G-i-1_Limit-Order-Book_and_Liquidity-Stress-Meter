@@ -1,75 +1,74 @@
 # Research design: LOB direction and liquidity stress
 
+## Submission scope and schedule
+
+The submission deadline is 2026-10-26. A new prospective multi-week collection and a November final-test schedule cannot produce completed evidence before that deadline. The submission therefore uses the already completed **retrospective CryptoHFTData archive pilot**, and labels it as a pilot throughout. It is not presented as a prospective study or evidence of live predictive performance. The dashboard's Binance captures are operational replay data and are not mixed into the archive study.
+
+| Stage | UTC period / deadline | Purpose and status |
+|---|---|---|
+| Historical training | 2026-09-28–2026-10-04 | Fit training-only thresholds and candidate models; archive data already available |
+| Historical validation | 2026-10-05–2026-10-11 | Select candidate models with one chronological validation week |
+| Historical holdout | 2026-10-12–2026-10-18 | Scored once; retain as holdout evidence and do not use for model selection |
+| Evidence audit | 2026-10-23 | Freeze code/configuration and compile observed-data quality and result evidence |
+| Report handoff | 2026-10-24–2026-10-25 | Finalize methods, limitations, and reproducibility package before submission |
+| Submission | 2026-10-26 | Submit the retrospective pilot with its stated limitations |
+
+The date windows above describe data already present in the archive; they are not a future collection schedule. The final holdout has already been scored once, so this repository must not re-run final-test evaluation as part of report preparation. If the submission later requires a prospective study, it must be a separately registered study with new dates and data, not a relabeling of this pilot.
+
 ## Objective and questions
 
-The study tests whether order-book state and order flow provide point-in-time information about very short-horizon mid-price direction and liquidity stress in crypto spot markets.
+The study examines whether point-in-time order-book state and order flow provide information about short-horizon mid-price direction and liquidity stress in Binance Spot BTCUSDT and ETHUSDT.
 
-- **RQ1:** Do static depth-imbalance measures predict mid-price direction beyond a class-frequency benchmark?
-- **RQ2:** Does event-level Order Flow Imbalance add predictive information beyond static imbalance?
-- **RQ3:** Do DeepLOB-style models improve on Logistic Regression and XGBoost on the untouched period?
-- **RQ4:** How stable are the results across volatility regimes and UTC weeks?
-- **RQ5:** Do conclusions persist under macro F1, MCC, Brier score, class imbalance, and calibration checks?
+- **RQ1:** Do static depth-imbalance measures predict mid-price direction beyond class-frequency and persistence baselines?
+- **RQ2:** Does event-level Order Flow Imbalance add information beyond static imbalance?
+- **RQ3:** How do the implemented classical models compare on the historical pilot's validation and once-scored holdout?
+- **RQ4:** How stable are results across symbols, horizons, weeks, and volatility regimes where observations permit?
+- **RQ5:** Do conclusions persist under imbalance-aware metrics, calibration, and label/feature sensitivity checks?
+
+DeepLOB is an optional compute-limited experiment. Its CNN-LSTM training and inference have not been verified in this pilot; no comparative claim about DeepLOB is made.
 
 ## Frozen scope and defaults
 
-| Decision | Default |
+| Decision | Frozen submission setting |
 |---|---|
 | Market | Binance Spot BTCUSDT and ETHUSDT |
-| Data | Prospective Binance Spot L2 book events and trades; this checkout has no historical 2025 L2 archive |
-| Sampling | Clock-time one-second grid |
-| Book depth | 20 levels per side; OBI sensitivity at L=1, 5, 10, 20 |
+| Research source | Approved CryptoHFTData public archive, isolated from dashboard data |
+| Sampling | UTC one-second grid |
+| Book depth | 20 levels per side; sensitivity at L=1, 5, 10, 20 |
 | Horizons | 1, 5, 10 seconds; 5 seconds is primary |
-| Direction classes | Up / flat / down, with symbol- and horizon-specific delta fitted on the first training fold and then frozen |
-| Stress label | Primary: future composite stress from train-only Q97.5 spread, impact, and RV thresholds plus a Q2.5 low-depth threshold. Spread-only Q95 is a sensitivity because tick-spread ties can make its positive class degenerate. |
-| Impact notional | BTCUSDT 250,000 USDT; ETHUSDT 100,000 USDT; override through settings |
-| Collection and split | Collect data for a prospective fixed window; first validation week starts 2026-11-02 |
-| Development | Expanding UTC-week walk-forward through 2026-11-22 |
-| Final test | 2026-11-23 through 2026-11-29, opened once after model selection |
-| Embargo | At least the maximum of the forecast horizon, 300-second feature lookback, and 100-second deep-model sequence |
-| Exchange extension | Coinbase cross-exchange validation is out of scope for the primary study |
-| Product mode | Read-only replay dashboard; an explicit CLI collector records live depth for later replay |
+| Direction classes | Up / flat / down; delta fitted on the first training week per symbol and horizon |
+| Primary stress label | Composite: upper-tail spread, impact, or realized volatility and lower-tail top-10 depth; thresholds learned on training data |
+| Stress sensitivity | Spread-only Q95; reported separately and never substituted after holdout inspection |
+| Embargo | 300 seconds, at least the maximum of forecast horizon, 300-second feature lookback, and 100-second DeepLOB sequence |
+| Study split | Train 2026-09-28–10-04; validation 2026-10-05–10-11; holdout 2026-10-12–10-18 |
+| Product mode | Read-only dashboard with continuous live monitoring and replay; live scores are operational and not research evidence |
 
-As audited on 2026-10-22, the processed grid contains 599 valid BTCUSDT seconds from 2026-10-21, with 100% coverage, zero dropped seconds, zero sequence gaps, and zero invalid-book events; ETHUSDT has no grid yet. There are no trained artifacts. This 10-minute capture verifies collection and replay but does not cover the configured training, validation, and final-test weeks. The collector cannot backfill missed L2 intervals. The final report must state actual valid seconds, coverage, missing intervals, and sequence-gap recoveries; it must not describe absent periods as observed. Continue collecting from before the first validation week through the untouched test week.
+The archive replay uses provider receive time as its point-in-time replay clock. Binance public REST aggregate trades do not provide historical Level 2 depth and are not a substitute for this source. The dashboard does not read or serve the provider archive under the standard source terms.
 
-## Data and replay
+## Data and replay contract
 
-Any retrospective study period requires historical Level 2 order-book events and trades; public REST aggregate trades cannot replace historical depth. The current evaluation is prospective because no approved historical L2 archive is present. Replay each symbol independently from snapshot and update IDs. A sequence gap invalidates the book until a complete snapshot is applied. Emit a one-second row only when the state is valid and no more than two seconds old. Do not interpolate missing book states.
+Replay each symbol independently. A snapshot bootstraps the local book; a depth update is accepted only when its update-ID range follows the current sequence. A sequence gap or invalid book state invalidates subsequent samples until a valid snapshot resynchronizes the book. Emit a one-second row only for a valid, non-stale state. Never interpolate across missing seconds or gaps.
 
-Every row retains exchange event time and local receive time separately. Sequence order, not local receive time, determines event application and OFI. Store raw source files and checksums outside Git. Store normalized grids in date and symbol Parquet partitions.
+Every row keeps the grid timestamp and available event/receive timestamps distinct. Event sequence—not local receive time—determines depth application and OFI accumulation. Raw inputs and normalized outputs stay outside Git. Historical and live grids use separate configured roots.
 
-## Features
+For the submission pilot, the validator and daily QA sidecars are the source of coverage and book-quality figures. The date-level output manifest must distinguish observed timestamps from expected seconds and preserve the source's timestamp basis. Missing, duplicate, invalid, stale, gap, and resynchronization counts must be reported only when measured; unknown source-level duplicate counts remain null rather than being inferred from grid rows.
 
-Features at time `t` may use only events with timestamps at or before `t`:
+## Features and targets
 
-- mid-price, absolute and relative spread, spread in configured ticks, and microprice offset;
-- quantity and notional depth, depth slope, and OBI at 1, 5, 10, and 20 levels;
-- OFI calculated from every event before it is aggregated into one-, five-, and ten-second windows;
-- aggressive buy/sell volume, trade count, last trade price, and trade imbalance in trailing windows;
-- displayed-size addition and depletion intensity. Public diff-depth deletions mix cancellations and executions, so depletion is a proxy rather than order-ID cancellation truth;
-- fixed-notional buy and sell price impact from walking the book;
-- mid-price realized variance over trailing 10, 60, and 300 seconds.
+At origin time `t`, features use only events at or before `t`: mid-price, relative spread, spread ticks, microprice, depth and OBI at 1/5/10/20 levels, event-level OFI in trailing windows, aggressive trade imbalance, displayed-size additions/depletions, fixed-notional impact, and trailing realized variance. Public depth depletion is a proxy and does not identify order cancellations by order ID. Missing impact or volatility windows remain missing.
 
-No feature window may cross an invalid second or sequence gap. Any scaler, imputer, feature selector, regime threshold, or probability calibrator is fitted within the corresponding training fold.
+For horizon `h`, direction is based on `mid[t+h] - mid[t]` and a delta estimated from the first training week for each symbol/horizon. A target is unavailable if any required state in `[t, t+h]` is missing or invalid. The composite stress target uses future spread/impact/RV upper training quantiles or future top-10 depth below its training quantile. Strict threshold comparisons are retained. Incomplete stress components do not become a non-stress label.
 
-## Targets
+## Validation and model comparison
 
-Direction uses the mid-price at origin `t` and the exact mid-price at `t+h`. A sample is eligible only if every one-second state from `t` through `t+h` is valid and contiguous. The flat-band threshold `delta` is estimated from absolute future mid-price changes in the first training fold for each symbol and horizon, then held fixed.
+Use chronological UTC-week partitions only. The pilot has one validation week and one held-out week; it cannot establish broad week-to-week generalization. Purge training origins whose label horizon overlaps validation and apply a time-based embargo of at least 300 seconds. Fit preprocessing, thresholds, and calibration using allowed training/validation data only. Candidate selection uses validation results; the holdout is opened once after that choice.
 
-Primary liquidity stress at `t+h` is one when any composite component is extreme: future spread, impact, or RV exceeds its training-fold 97.5th percentile, or future top-10 depth falls below its training-fold 2.5th percentile. Thresholds use training rows only; strict comparisons leave incomplete or tied observations unlabeled as positive. Report class prevalence by split and month. Keep spread-only Q95 as a separately named sensitivity; do not switch label definitions after inspecting final-test results.
+Compare class-frequency and persistence baselines with Logistic Regression, Random Forest, and XGBoost where available. Compare models on matching valid origins and target definitions. Direction metrics include macro F1, balanced accuracy, MCC, per-class precision/recall, confusion matrix, Brier score, and calibration. Stress metrics include PR-AUC, MCC, validation-selected threshold precision/recall, Brier score, calibration, and positive-class prevalence. Accuracy is contextual only.
 
-## Models and validation
+Report delta sensitivity, OBI depth sensitivity, composite versus spread-only stress, model latency/size, and results by symbol, horizon, week, and causal trailing-volatility regime where the saved pilot outputs support them. For paired Brier-loss inference, aggregate losses by UTC minute and use the documented Newey–West rule; do not report an asymptotic p-value when there are too few minute blocks. A p-value does not substitute for effect size or calibration.
 
-1. Class-frequency and persistence baselines.
-2. Logistic Regression with train-fold scaling and class balancing.
-3. Random Forest and XGBoost; choose settings using chronological validation folds only.
-4. DeepLOB-style spatial CNN-LSTM over 100-second windows of 40 raw LOB channels. The separate offline script evaluates it against Logistic Regression and persistence on the same evenly spaced sample of up to 10,000 held-out origins. DeepLOB and its Logistic baseline use the same compute-limited cap of 8,000 training rows by default; report this cap and sampled/available counts. Treat results as a pilot unless the cap is raised and rerun before model selection. Temporal CNN or Transformer only if DeepLOB improves validation results.
+## Evidence and limits
 
-Use full Monday-to-Sunday UTC weeks for expanding walk-forward folds. The first validation week is 2026-11-02; later weekly folds run through 2026-11-22. The final untouched test week is 2026-11-23 through 2026-11-29. Collect at least one full training week before the first validation week. Apply an embargo of at least `max(horizon, feature lookback, sequence lookback)` between training labels and validation. Fit preprocessing and thresholds only on the fold's training data. Select models using validation results, then fit on development data and score the fixed test week once. The baseline report includes δ quantiles around the frozen direction threshold and OBI depth sensitivity at L=1, 5, 10, and 20 for each horizon.
+Saved pilot metrics in `outputs/tables/historical_archive_pilot/` document the single validation week and the once-scored holdout. Data QA sidecars and validator outputs document actual coverage. No result may imply the November schedule was completed, that a short Binance capture is a research sample, or that the meter provides live trading predictions. Any missing requested analysis must be marked unavailable or not evaluated in the report.
 
-Direction metrics: macro F1, balanced accuracy, MCC, per-class precision/recall, multiclass Brier score, confusion matrix, and calibration curve. Stress metrics: PR-AUC, MCC, precision/recall at a validation-selected threshold, Brier score, calibration curve, and expected calibration error. Report accuracy for context only. Compare paired models on the same folds and include paired significance checks where sample size supports them.
-
-Report metrics by UTC week and by three causal volatility regimes formed from trailing mid-price RV terciles; also include monthly stress prevalence for monitoring. Include paired McNemar tests for classification correctness. For Diebold–Mariano Brier-loss inference, average paired differences within UTC minutes, use a Newey–West automatic bandwidth with a 10-minute minimum, and withhold the asymptotic p-value when fewer than 30 minute blocks are available. Compare against persistence (and Logistic Regression for DeepLOB). Add inference latency and model-size/parameter summaries. No conclusion about deep learning is supported unless its incremental performance is shown on the untouched period.
-
-## Product boundary
-
-The Liquidity Stress Meter is a read-only replay product. It shows spread, top-depth imbalance, OFI, `P(up)`, `P(flat)`, `P(down)`, liquidity-stress probability, model version, and book-quality status. Live capture is an explicit data-acquisition command; it is not an order-entry feature or a direct dashboard feed. If replay data or a compatible trained model is absent, the API and dashboard show an explicit unavailable state.
+The pilot is limited by its single validation week, compute-limited training sample, and reliance on an external archive's receive-time clock. DeepLOB execution has not been demonstrated. Results do not establish robust prospective performance, cross-exchange generalization, or causal effects of liquidity on price.

@@ -6,8 +6,10 @@ import argparse
 import hashlib
 import json
 import logging
+import platform
 import sys
 import time
+from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
 
 import joblib
@@ -43,10 +45,20 @@ def _study_provenance(
     study_label: str,
 ) -> dict[str, object]:
     settings_hash = hashlib.sha256(settings_path.read_bytes()).hexdigest()
+    manifest_path = REPOSITORY_ROOT / "outputs" / "data_quality" / "data_manifest.csv"
+    dependency_versions: dict[str, str | None] = {}
+    for package in ("numpy", "pandas", "scikit-learn", "xgboost", "joblib", "pyarrow"):
+        try:
+            dependency_versions[package] = package_version(package)
+        except PackageNotFoundError:
+            dependency_versions[package] = None
     timestamps = pd.to_datetime(frame["timestamp_utc"], utc=True, errors="coerce").dropna()
     return {
-        "configuration_file": str(settings_path.relative_to(REPOSITORY_ROOT)),
+        "configuration_file": settings_path.relative_to(REPOSITORY_ROOT).as_posix(),
         "configuration_sha256": settings_hash,
+        "data_manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest() if manifest_path.is_file() else None,
+        "python_version": platform.python_version(),
+        "dependency_versions": dependency_versions,
         "study_label": study_label,
         "feature_schema_version": LOB_CLASSIFICATION_FEATURE_SCHEMA_VERSION,
         "direction_label_schema_version": DIRECTION_LABEL_SCHEMA_VERSION,
@@ -55,6 +67,14 @@ def _study_provenance(
         "observed_data_end_utc": timestamps.max().isoformat() if len(timestamps) else None,
         "symbols": sorted(frame["symbol"].dropna().astype(str).str.upper().unique().tolist()) if "symbol" in frame else [],
         "horizons_seconds": list(horizons),
+        "training_period_utc": {
+            "start": timestamps.min().isoformat() if len(timestamps) else None,
+            "end": settings.lob_first_validation_week_utc,
+        },
+        "validation_period_utc": {
+            "start": settings.lob_first_validation_week_utc,
+            "end": settings.lob_development_end_utc,
+        },
         "development_end_utc": settings.lob_development_end_utc,
         "final_test_start_utc": settings.lob_untouched_test_start_utc,
         "final_test_end_utc": settings.lob_untouched_test_end_utc,
@@ -736,7 +756,15 @@ def run_symbol(
         artifact = {
             "symbol": symbol,
             "horizon_seconds": horizon,
+            "target_names": {"direction": "midprice_direction", "stress": "liquidity_stress"},
+            "direction_model_name": direction_name,
+            "stress_model_name": stress_name,
             "study_label": study_label,
+            "feature_schema_version": LOB_CLASSIFICATION_FEATURE_SCHEMA_VERSION,
+            "label_schema_versions": {
+                "direction": DIRECTION_LABEL_SCHEMA_VERSION,
+                "stress": STRESS_LABEL_SCHEMA_VERSION,
+            },
             "max_train_rows_per_fit": int(max_train_rows),
             "model_version": f"{direction_name}-{stress_name}-h{horizon}-{test_start.date().isoformat()}",
             "trained_at_utc": pd.Timestamp.now(tz="UTC").isoformat(),
@@ -807,9 +835,9 @@ def run_symbol(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--settings", type=Path, default=REPOSITORY_ROOT / "config" / "settings.yaml", help="Study settings file; defaults to config/settings.yaml")
-    parser.add_argument("--metrics-dir", type=Path, default=REPOSITORY_ROOT / "outputs" / "tables", help="Metrics output root; defaults to outputs/tables")
+    parser.add_argument("--metrics-dir", type=Path, default=REPOSITORY_ROOT / "outputs" / "tables" / "historical_archive_pilot", help="Metrics output root; defaults to the already-scored submission pilot")
     parser.add_argument("--artifact-dir", type=Path, default=REPOSITORY_ROOT / "backend" / "artifacts" / "meter", help="Model artifact root; defaults to backend/artifacts/meter")
-    parser.add_argument("--study-label", default="configured_study", help="Provenance label stored in metrics and model artifacts")
+    parser.add_argument("--study-label", default="historical_archive_pilot", help="Provenance label stored in metrics and model artifacts")
     parser.add_argument("--symbol", choices=("BTCUSDT", "ETHUSDT"))
     parser.add_argument("--horizon", type=int, choices=(1, 5, 10))
     parser.add_argument("--embargo-seconds", type=int)

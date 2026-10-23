@@ -398,6 +398,81 @@
           }
         }
       }
+    },
+    "/api/v1/live/status": {
+      "get": {
+        "tags": [
+          "Live market data"
+        ],
+        "summary": "Get Live Status",
+        "operationId": "get_live_status_api_v1_live_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Get Live Status Api V1 Live Status Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/live/{symbol}/stream": {
+      "get": {
+        "tags": [
+          "Live market data"
+        ],
+        "summary": "Stream Live Market",
+        "operationId": "stream_live_market_api_v1_live__symbol__stream_get",
+        "parameters": [
+          {
+            "name": "symbol",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Symbol"
+            }
+          },
+          {
+            "name": "horizon_seconds",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 60,
+              "minimum": 1,
+              "default": 5,
+              "title": "Horizon Seconds"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {

@@ -4,19 +4,19 @@ Research and replay dashboard for short-horizon cryptocurrency market microstruc
 
 ## Research scope
 
-- Prospective Binance Spot BTCUSDT and ETHUSDT L2 depth/trade captures remain the primary study. Binance REST does not backfill historical L2 depth. An optional external CryptoHFTData archive supports a separate historical pilot; it is downloaded locally and is not bundled in Git.
+- The research result prepared for the 2026-10-26 submission is a retrospective CryptoHFTData archive pilot. Its holdout was scored once and is not used for model selection. It is not a prospective or live-performance study. Binance REST does not backfill historical L2 depth.
 - Replay into a valid one-second grid with the top 20 bid and ask levels. Sequence gaps invalidate samples until a complete snapshot restores the book.
 - Primary horizon: 5 seconds. Sensitivity horizons: 1 and 10 seconds.
 - Primary liquidity-stress label: train-only composite of unusually wide spread, high price impact, low depth, or high realized volatility. This avoids a discrete one-tick spread threshold producing too few positive samples.
-- Baselines: one-second direction persistence, stress-state persistence, Logistic Regression, Random Forest, and XGBoost. A sequence-based DeepLOB-style CNN-LSTM is evaluated as an optional offline model.
-- Expanding weekly walk-forward development through 2026-11-22; 2026-11-23 through 2026-11-29 is the frozen, one-time final test week.
-- Product: a read-only Liquidity Stress Meter over normalized replay data. Live Binance collection runs as an explicit CLI command and does not place orders or connect directly to the dashboard.
+- Baselines: one-second direction persistence, stress-state persistence, Logistic Regression, Random Forest, and XGBoost. A sequence-based DeepLOB-style CNN-LSTM runner exists but was not evaluated in the saved submission pilot.
+- The frozen archive pilot uses training 2026-09-28–2026-10-04, validation 2026-10-05–2026-10-11, and holdout 2026-10-12–2026-10-18. The submission evidence audit is scheduled for 2026-10-23, report handoff for 2026-10-24–25, and submission for 2026-10-26. This is a deadline-driven retrospective pilot, not a replacement claim for a prospective study.
+- Product: a read-only dashboard with continuous Binance Spot live monitoring and historical replay. Live collection starts with the API, uses public market-data endpoints only, and never places orders.
 
 The project does not place orders and does not provide investment advice.
 
 ## Current data and model availability
 
-Market data is not stored in Git. Place approved, normalized replay partitions under:
+Market data is not stored in Git. Research archive data and live dashboard captures use separate roots. The research configuration reads the approved archive pilot under `data_processed/cryptohftdata_pilot/`; the runtime configuration reads live or user-owned partitions under `data_processed/lob/`:
 
 ```text
 data_processed/lob/grid/
@@ -26,7 +26,7 @@ data_processed/lob/grid/
 
 The pipeline separates immutable source messages under `data_raw/`, normalized replay events under `data_interim/`, and grids/features under `data_processed/`. Replay accepts chronologically ordered JSONL/JSONL.GZ with canonical `snapshot`, `depth_update`, and `trade` records or native Binance Spot events. Binance REST aggregate trades cannot reconstruct historical L2 books. See [research_design.md](docs/research_design.md) and [data_dictionary.md](docs/data_dictionary.md) for the full contract.
 
-The live capture already in this checkout contains 750 valid BTCUSDT one-second rows from 2026-10-21 through 2026-10-22. The separate historical-archive pilot for 2026-09-28 through 2026-10-18 has been replayed, validated, and trained for BTCUSDT and ETHUSDT. It uses one train week, one validation week, and one untouched historical holdout week; it does not replace the configured prospective study (first validation week 2026-11-02, development through 2026-11-22, final test 2026-11-23 through 2026-11-29). Pilot artifacts are under `backend/artifacts/meter/<SYMBOL>/`, with aggregate evaluation under `outputs/tables/historical_archive_pilot/<SYMBOL>/`. See [historical_archive_pilot.md](docs/historical_archive_pilot.md) for results, source terms, and exact commands. The live collector itself cannot recreate earlier order-book history. Restart the API after training so it loads the artifacts. Predictions are still unavailable when the selected symbol/time has no recent valid book in the app's configured replay grid; the historical archive grid is isolated and is not served by the dashboard.
+The archive pilot has 1,812,849 BTC and 1,812,839 ETH rows across 22 daily partitions per symbol; one boundary row on 2026-10-19 is outside the holdout scores. Its validation reports and model metrics are saved locally under `outputs/manifests/historical_archive_pilot/` and `outputs/tables/historical_archive_pilot/`. Live dashboard captures remain separate: BTC has 750 replay rows over 2026-10-21–22, and ETH has 599 valid seconds on 2026-10-23 with zero sequence gaps. These short captures are dashboard smoke data only. See [historical_archive_pilot.md](docs/historical_archive_pilot.md) for pilot results, source terms, and reproducible commands. The dashboard never reads the archive grid.
 
 ## Setup
 
@@ -39,7 +39,7 @@ $PY = ".\.venv\Scripts\python.exe"
 & $PY -m pip install -r requirements.txt
 ```
 
-## Run the API and replay dashboard
+## Run the API and live/replay dashboard
 
 Start the API from the repository root:
 
@@ -56,13 +56,15 @@ npm ci
 npm run dev
 ```
 
-Open <http://127.0.0.1:5173>. The API is documented at <http://127.0.0.1:8000/docs>.
+Open <http://127.0.0.1:5173>. The dashboard opens in **LIVE** mode and the API is documented at <http://127.0.0.1:8000/docs>. Switch to **replay** to inspect captured or normalized historical data.
 
-The API reads Parquet replay files and model artifacts only. It does not start a market-data collector or download data when the server starts.
+When the API starts, it continuously collects public Binance Spot depth and aggregate-trade streams for BTCUSDT and ETHUSDT, synchronizes each local order book with a REST snapshot, and reconnects/resynchronizes after interruptions. It writes source captures under `data_raw/binance_spot/captures/` and normalized events under `data_interim/binance_spot/captures/`. Stop the API with `Ctrl+C`; the collector closes its files and writes capture manifests. The dashboard itself is read-only and does not require Binance credentials.
 
-## Collect live market data
+The live model scores only after it has a compatible artifact and enough recent continuous samples for rolling features (up to 300 seconds); after a disconnect or book resynchronization, that warm-up starts again. Live scores are operational outputs and are not evidence of out-of-sample or live predictive performance. The research study remains the isolated retrospective archive pilot described above.
 
-The explicit collector command uses public Binance Spot endpoints and does not require an API key. It subscribes to diff-depth and aggregate trades, synchronizes depth updates against a REST snapshot, checks update IDs, and resynchronizes after gaps or reconnects. It stores raw WebSocket messages, REST snapshots, normalized replay events, an event log of connection/gap/recovery activity, checksums, and a source manifest in their respective data layers. The public depth stream contains price-level changes, not order-ID events; displayed-size depletion is therefore only a cancellation proxy.
+## Manually collect live market data
+
+This optional CLI flow uses the same public Binance Spot endpoints and synchronization checks as the API-managed live feed. Runtime and collector defaults load `config/settings_live.yaml`; the archive research grid remains isolated.
 
 Collect ten minutes of BTCUSDT data for a replay/dashboard smoke check:
 
@@ -70,7 +72,7 @@ Collect ten minutes of BTCUSDT data for a replay/dashboard smoke check:
 & $PY backend\scripts\collect_binance_lob.py --symbol BTCUSDT --duration-seconds 600
 ```
 
-This short capture does not qualify for model evaluation. For the frozen weekly study, start collection no later than 2026-10-26 and keep it running through 2026-11-29 so the dataset contains a full training week, three weekly validation folds, and the untouched test week. Omit `--duration-seconds` to collect until Ctrl+C; an interrupted run saves its partial files and manifest, but any coverage gaps remain gaps.
+This short capture does not qualify for model evaluation. Omit `--duration-seconds` to collect until Ctrl+C; an interrupted run saves its partial files and manifest, but any coverage gaps remain gaps.
 
 The command prints the raw capture folder and normalized event folder. Replay the event partitions, validate the resulting grid, and build features:
 
@@ -108,13 +110,15 @@ Build point-in-time features partition by partition; the builder carries the pre
 & $PY backend\scripts\build_lob_classification_dataset.py
 ```
 
-The script writes full-depth features, rolling OFI/trade flow, price impact, and 10/60/300-second RV to `data_processed/lob/features/` using atomic file replacement. Run the expanding weekly development and one-time final-test evaluation with:
+The script writes full-depth features, rolling OFI/trade flow, price impact, and 10/60/300-second RV to `data_processed/lob/features/` using atomic file replacement. The following classifier command is an entry point for a future frozen study. The submission pilot already has saved results; do not rerun it because its holdout has been scored once:
 
 ```powershell
 & $PY backend\scripts\run_lob_classification.py
 ```
 
-This command uses the fixed weekly boundaries in `config/settings.yaml`, writes metrics to ignored `outputs/tables/<SYMBOL>/` and trained bundles to ignored `backend/artifacts/meter/<SYMBOL>/`, and refuses to score the 2026-11-23 through 2026-11-29 test week again when an output already exists. Pass `--allow-repeat-final-test` only for an intentional re-score. Optional filters include `--symbol BTCUSDT` and `--horizon 5`.
+The offline classifier uses `config/settings.yaml`; the API and live collector use `config/settings_live.yaml`. The runner refuses to score an existing final-test output again. Do not pass `--allow-repeat-final-test` for the submission pilot.
+
+For the 2026-10-26 handoff, do not rerun model evaluation. Rebuild the read-only audit tables from saved results and manifests with `& $PY backend\scripts\build_submission_evidence.py`; see [implementation_status.md](docs/implementation_status.md) for generated files and limitations.
 
 The run reports stress-label prevalence by month and stops if development prevalence is outside the configured 2–10% range. The primary label is the train-only composite at `stress_quantile: 0.975` and `stress_depth_quantile: 0.025`. It also reports δ and L sensitivity, paired McNemar and minute-blocked Newey–West Diebold–Mariano Brier tests against persistence, prediction latency, and model size. DM inference averages paired losses by UTC minute, uses an automatic bandwidth with a 10-minute minimum, and withholds a p-value when fewer than 30 minute blocks are available. Impact notionals and tick sizes are configured per symbol in `config/settings.yaml`.
 
@@ -125,7 +129,7 @@ DeepLOB requires the optional PyTorch dependency. Install it and run the sequenc
 & $PY backend\scripts\run_deeplob_classification.py --symbol BTCUSDT --horizon 5
 ```
 
-The DeepLOB run uses the same weekly development/final-test boundaries and compares against Logistic Regression and persistence on the same evenly spaced sample of up to 10,000 final-test origins. DeepLOB and its Logistic baseline each use at most 8,000 training rows by default (`deeplob_max_train_rows`); this is a compute-limited pilot, not a full-data DeepLOB result. Its JSON reports sampled and available row counts. It is subject to its own final-test repeat guard.
+The DeepLOB runner is available but a full fit/predict run is not verified for this submission pilot. Do not run it against the once-scored holdout; report DeepLOB as not evaluated unless an existing saved run supplies valid evidence. Any later prospective DeepLOB study must use the same origins for DeepLOB, Logistic Regression, and persistence and report its compute cap, sample counts, parameter count, and latency.
 
 ## API
 
@@ -151,9 +155,11 @@ Use ISO-8601 UTC timestamps; malformed timestamps are rejected with HTTP 422. `/
 - `backend/app/models/lob_classifiers.py` and `deeplob_classifier.py` — shallow baselines and the optional sequence classifier.
 - `backend/app/evaluation/lob_classification.py` — imbalance-aware metrics, McNemar, and HAC Diebold–Mariano Brier tests.
 - `backend/scripts/collect_binance_lob.py`, `download_binance_aggtrades.py`, `replay_cryptohftdata.py`, and `validate_lob_data.py` — collection through validated one-second grids.
+- `backend/scripts/build_submission_evidence.py` — read-only quality, feature, label, split, metrics, and artifact inventory reports for the saved pilot.
 - `backend/app/api/routes/replay.py` — replay, meter, model, and evaluation API.
 - `frontend/src/LOBApp.tsx` — replay-first Liquidity Stress Meter.
-- `config/settings.yaml` — horizons, label settings, data period, and embargo.
+- `config/settings.yaml` — isolated research archive source, frozen pilot periods, labels, and embargo.
+- `config/settings_live.yaml` — runtime API and live collector paths; does not expose the archive grid.
 
 The previous Tail-Risk API, scripts, tests, configurations, and results are preserved under `legacy/tail_risk_backend/` and `legacy/results_tail_risk/`; they are outside the active app and CI test path.
 
@@ -165,6 +171,6 @@ The previous Tail-Risk API, scripts, tests, configurations, and results are pres
 - Report macro F1, balanced accuracy, MCC, class precision/recall, Brier score, calibration, and stress PR-AUC. Accuracy alone is not a model-selection metric.
 - Compare OFI against static depth imbalance using the same model and folds.
 - Report the fraction of valid replay seconds and every recovery after a sequence gap.
-- The repository has no historical L2 archive; the short October 2026 live capture is exploratory and does not complete the configured weekly study window. Report actual-source coverage and stress prevalence after the capture window is complete. Live data cannot replace an earlier historical holdout.
+- The archive pilot is the only research evaluation available for submission. The short October 2026 Binance captures are operational dashboard smoke data and do not add research holdout evidence. See the date-level source/coverage artifacts under `outputs/data_quality/` when generated; do not infer coverage during periods with no observations.
 
 See [methodology.md](docs/methodology.md) for definitions and [research_design.md](docs/research_design.md) for frozen defaults.

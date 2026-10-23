@@ -319,11 +319,13 @@ def run_symbol(symbol: str, horizons: tuple[int, ...], settings, allow_repeat: b
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--settings", type=Path, default=REPOSITORY_ROOT / "config" / "settings.yaml", help="Research settings file")
     parser.add_argument("--symbol", choices=("BTCUSDT", "ETHUSDT"))
     parser.add_argument("--horizon", type=int, choices=(1, 5, 10))
     parser.add_argument("--allow-repeat-final-test", action="store_true")
     args = parser.parse_args()
-    settings = load_settings()
+    settings_path = args.settings if args.settings.is_absolute() else REPOSITORY_ROOT / args.settings
+    settings = load_settings(settings_path)
     symbols = (args.symbol,) if args.symbol else settings.symbols
     horizons = (args.horizon,) if args.horizon else settings.lob_classification_horizons_seconds
     summaries = {}

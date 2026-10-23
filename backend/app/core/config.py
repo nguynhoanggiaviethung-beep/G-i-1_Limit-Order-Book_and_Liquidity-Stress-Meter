@@ -12,7 +12,7 @@ import yaml
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_SETTINGS_PATH = REPOSITORY_ROOT / "config" / "settings.yaml"
+DEFAULT_SETTINGS_PATH = REPOSITORY_ROOT / "config" / "settings_live.yaml"
 
 
 @dataclass(frozen=True)
@@ -71,10 +71,10 @@ class Settings:
     lob_stress_max_positive_rate: float = 0.10
     lob_max_missing_feature_fraction: float = 0.10
     lob_max_staleness_seconds: int = 2
-    lob_first_validation_week_utc: str = "2026-11-02T00:00:00Z"
-    lob_development_end_utc: str = "2026-11-22T23:59:59Z"
-    lob_untouched_test_start_utc: str = "2026-11-23T00:00:00Z"
-    lob_untouched_test_end_utc: str = "2026-11-29T23:59:59Z"
+    lob_first_validation_week_utc: str = "2026-10-05T00:00:00Z"
+    lob_development_end_utc: str = "2026-10-11T23:59:59Z"
+    lob_untouched_test_start_utc: str = "2026-10-12T00:00:00Z"
+    lob_untouched_test_end_utc: str = "2026-10-18T23:59:59Z"
     lob_embargo_seconds: int = 300
     lob_feature_lookback_seconds: int = 300
     lob_deeplob_lookback_seconds: int = 100
@@ -170,7 +170,7 @@ class Settings:
 
 
 def load_settings(path: Path | str | None = None) -> Settings:
-    """Read settings.yaml, applying safe defaults for omitted values."""
+    """Read the selected settings file, applying safe defaults for omitted values."""
     settings_path = Path(path) if path else DEFAULT_SETTINGS_PATH
     raw: dict[str, Any] = {}
     if settings_path.exists():
@@ -261,10 +261,10 @@ def load_settings(path: Path | str | None = None) -> Settings:
         lob_stress_max_positive_rate=float(lob.get("stress_max_positive_rate", 0.10)),
         lob_max_missing_feature_fraction=float(lob.get("max_missing_feature_fraction", 0.10)),
         lob_max_staleness_seconds=int(lob.get("max_staleness_seconds", 2)),
-        lob_first_validation_week_utc=str(lob.get("first_validation_week_utc", "2026-11-02T00:00:00Z")),
-        lob_development_end_utc=str(lob.get("development_end_utc", "2026-11-22T23:59:59Z")),
-        lob_untouched_test_start_utc=str(lob.get("untouched_test_start_utc", "2026-11-23T00:00:00Z")),
-        lob_untouched_test_end_utc=str(lob.get("untouched_test_end_utc", "2026-11-29T23:59:59Z")),
+        lob_first_validation_week_utc=str(lob.get("first_validation_week_utc", "2026-10-05T00:00:00Z")),
+        lob_development_end_utc=str(lob.get("development_end_utc", "2026-10-11T23:59:59Z")),
+        lob_untouched_test_start_utc=str(lob.get("untouched_test_start_utc", "2026-10-12T00:00:00Z")),
+        lob_untouched_test_end_utc=str(lob.get("untouched_test_end_utc", "2026-10-18T23:59:59Z")),
         lob_embargo_seconds=int(lob.get("embargo_seconds", 300)),
         lob_feature_lookback_seconds=int(lob.get("feature_lookback_seconds", 300)),
         lob_deeplob_lookback_seconds=int(lob.get("deeplob_lookback_seconds", 100)),

@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 type SymbolCode = "BTCUSDT" | "ETHUSDT";
+type Mode = "live" | "replay";
 type Level = [string, string];
 type Snapshot = {
   symbol: SymbolCode;
@@ -30,6 +31,16 @@ type Meter = {
   stress_probability_threshold?: number | null;
   model_version?: string | null;
   quality?: { book_valid?: boolean; reason?: string; seconds_since_gap?: number | null };
+};
+type LiveUpdate = {
+  schema: string;
+  symbol: SymbolCode;
+  status: string;
+  reason?: string | null;
+  updated_at_utc: string;
+  snapshot: Snapshot | null;
+  meter: Meter;
+  horizon_seconds: number;
 };
 
 const API_ROOT = import.meta.env.VITE_API_ROOT ?? "";
@@ -67,6 +78,38 @@ function toLocalInput(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.valueOf())) return "";
   return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+}
+
+function noReplayMessage(symbol: SymbolCode, timestamp: string | undefined, status: DataStatus | null, reason?: string) {
+  const symbolData = status?.symbols?.[symbol];
+  const first = symbolData?.first_date_utc;
+  const last = symbolData?.last_date_utc;
+  const range = first && last
+    ? `Dữ liệu ${symbol} hiện có từ ${first} đến ${last} (UTC).`
+    : `Hiện chưa có dữ liệu replay cho ${symbol}.`;
+  const selected = timestamp ? ` tại ${formatTime(new Date(timestamp).toISOString())}` : "";
+  const day = timestamp ? new Date(timestamp).toISOString().slice(0, 10) : null;
+  const outsideRange = Boolean(day && first && last && (day < first || day > last));
+  const staleBook = reason?.match(/Latest valid book is ([\d.]+)s old \(limit ([\d.]+)s\)/);
+  const explanation = outsideRange
+    ? "Chọn thời điểm trong khoảng dữ liệu; capture live không thể khôi phục sổ lệnh lịch sử của ngày trước đó."
+    : staleBook
+      ? `Snapshot gần nhất cách mốc yêu cầu ${staleBook[1]} giây, vượt ngưỡng cho phép ${staleBook[2]} giây.`
+      : "Ngày này có dữ liệu, nhưng không tìm thấy book hợp lệ gần mốc đã chọn; hãy chọn giờ khác trong khoảng quan sát.";
+  return `Không có replay book cho ${symbol}${selected}. ${range} ${explanation}`;
+}
+
+function liveStatusLabel(status: string) {
+  switch (status) {
+    case "live": return "đang nhận dữ liệu";
+    case "syncing": return "đang đồng bộ sổ lệnh";
+    case "reconnecting": return "đang kết nối lại";
+    case "stale": return "dữ liệu bị gián đoạn";
+    case "disabled": return "đã tắt nguồn live";
+    case "error": return "lỗi nguồn dữ liệu";
+    case "stopped": return "đã dừng";
+    default: return "đang kết nối Binance";
+  }
 }
 
 function Stat({ label, value, unit, source }: { label: string; value: string; unit?: string; source: string }) {
@@ -128,6 +171,7 @@ function ProbRow({ mark, label, value, tone }: { mark: string; label: string; va
 }
 
 export function LOBApp() {
+  const [mode, setMode] = useState<Mode>("live");
   const [symbol, setSymbol] = useState<SymbolCode>("BTCUSDT");
   const [horizon, setHorizon] = useState(5);
   const [requestedTime, setRequestedTime] = useState("");
@@ -136,39 +180,91 @@ export function LOBApp() {
   const [meter, setMeter] = useState<Meter | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [liveStatus, setLiveStatus] = useState("starting");
+  const [liveReason, setLiveReason] = useState<string | null>("Đang khởi động nguồn dữ liệu Binance Spot.");
+  const requestVersion = useRef(0);
 
   const refresh = useCallback(async () => {
+    const version = ++requestVersion.current;
+    const isCurrent = () => version === requestVersion.current;
     setBusy(true);
     setError(null);
+    setSnapshot(null);
+    setMeter(null);
     try {
-      setStatus(await getJson<DataStatus>("/api/v1/data-status"));
+      const nextStatus = await getJson<DataStatus>("/api/v1/data-status");
+      if (!isCurrent()) return;
+      setStatus(nextStatus);
       let next: Snapshot | null = null;
       if (requestedTime) {
         const ts = new Date(requestedTime).toISOString();
         const r = await getJson<{ snapshot: Snapshot | null; reason?: string }>(
           `/api/v1/replay/${symbol}/at?timestamp_utc=${encodeURIComponent(ts)}&depth=20`,
         );
+        if (!isCurrent()) return;
         next = r.snapshot;
-        if (!next && r.reason) setError(r.reason);
+        if (!next) {
+          setError(noReplayMessage(symbol, ts, nextStatus, r.reason));
+          return;
+        }
       } else {
         const r = await getJson<{ snapshots: Snapshot[] }>(`/api/v1/replay/${symbol}?limit=1&depth=20`);
+        if (!isCurrent()) return;
         next = r.snapshots.at(-1) ?? null;
+        if (!next) {
+          setError(noReplayMessage(symbol, undefined, nextStatus));
+          return;
+        }
       }
       setSnapshot(next);
-      if (next) {
-        setRequestedTime((prev) => prev || toLocalInput(next!.timestamp_utc));
-        setMeter(await getJson<Meter>(`/api/v1/meter/${symbol}?timestamp_utc=${encodeURIComponent(next.timestamp_utc)}&horizon_seconds=${horizon}`));
-      } else {
-        setMeter(await getJson<Meter>(`/api/v1/meter/${symbol}?horizon_seconds=${horizon}`));
-      }
+      if (!requestedTime) setRequestedTime(toLocalInput(next.timestamp_utc));
+      const nextMeter = await getJson<Meter>(`/api/v1/meter/${symbol}?timestamp_utc=${encodeURIComponent(next.timestamp_utc)}&horizon_seconds=${horizon}`);
+      if (!isCurrent()) return;
+      setMeter(nextMeter);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      if (isCurrent()) setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setBusy(false);
+      if (isCurrent()) setBusy(false);
     }
   }, [horizon, requestedTime, symbol]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    if (mode === "replay") void refresh();
+  }, [mode, refresh]);
+
+  useEffect(() => {
+    if (mode !== "live") return;
+    requestVersion.current += 1;
+    setError(null);
+    setSnapshot(null);
+    setMeter(null);
+    setLiveStatus("connecting");
+    setLiveReason("Đang mở luồng dữ liệu Binance Spot.");
+    let active = true;
+    const stream = new EventSource(`${API_ROOT}/api/v1/live/${symbol}/stream?horizon_seconds=${horizon}`);
+    stream.onmessage = (event) => {
+      if (!active) return;
+      try {
+        const update = JSON.parse(event.data) as LiveUpdate;
+        setLiveStatus(update.status);
+        setLiveReason(update.reason ?? null);
+        setSnapshot(update.snapshot);
+        setMeter(update.meter);
+      } catch {
+        setLiveStatus("error");
+        setLiveReason("Không đọc được dữ liệu cập nhật từ máy chủ.");
+      }
+    };
+    stream.onerror = () => {
+      if (!active) return;
+      setLiveStatus("reconnecting");
+      setLiveReason("Mất kết nối tới máy chủ live; trình duyệt đang tự kết nối lại.");
+    };
+    return () => {
+      active = false;
+      stream.close();
+    };
+  }, [mode, symbol, horizon]);
 
   const symbolStatus = status?.symbols?.[symbol];
   const f = snapshot?.features ?? {};
@@ -185,22 +281,48 @@ export function LOBApp() {
     <main className="app">
       <header className="top">
         <strong>liquidity stress meter</strong>
-        <span className="mu">replay · chỉ đọc · không đặt lệnh</span>
+        <span className="mu">{mode === "live" ? `LIVE · ${liveStatusLabel(liveStatus)} · chỉ đọc · không đặt lệnh` : "replay · chỉ đọc · không đặt lệnh"}</span>
       </header>
 
       <section className="controls" aria-label="Điều khiển replay">
-        <Segmented label="cặp" value={symbol} onChange={setSymbol}
+        <Segmented label="chế độ" value={mode} onChange={setMode}
+          options={[{ value: "live", text: "LIVE" }, { value: "replay", text: "replay" }]} />
+        <Segmented label="cặp" value={symbol} onChange={(nextSymbol) => {
+          if (nextSymbol === symbol) return;
+          setSymbol(nextSymbol);
+          setRequestedTime("");
+          setSnapshot(null);
+          setMeter(null);
+          setError(null);
+        }}
           options={[{ value: "BTCUSDT", text: "BTC/USDT" }, { value: "ETHUSDT", text: "ETH/USDT" }]} />
         <Segmented label="horizon" value={horizon} onChange={setHorizon}
           options={[{ value: 1, text: "1s" }, { value: 5, text: "5s" }, { value: 10, text: "10s" }]} />
-        <label className="field grow">
-          <span className="lbl">thời điểm replay · giờ máy</span>
-          <input type="datetime-local" value={requestedTime} onChange={(e) => setRequestedTime(e.target.value)} />
-        </label>
-        <button type="button" className="go" onClick={() => void refresh()} disabled={busy}>{busy ? "đang tải…" : "nạp replay"}</button>
+        {mode === "replay" ? (
+          <>
+            <label className="field grow">
+              <span className="lbl">thời điểm replay · giờ máy</span>
+              <input
+                type="datetime-local"
+                value={requestedTime}
+                min={symbolStatus?.first_date_utc ? toLocalInput(`${symbolStatus.first_date_utc}T00:00:00Z`) : undefined}
+                max={symbolStatus?.last_date_utc ? toLocalInput(`${symbolStatus.last_date_utc}T23:59:59Z`) : undefined}
+                onChange={(e) => setRequestedTime(e.target.value)}
+              />
+            </label>
+            <button type="button" className="go" onClick={() => void refresh()} disabled={busy}>{busy ? "đang tải…" : "nạp replay"}</button>
+          </>
+        ) : (
+          <div className={`live-indicator ${liveStatus === "live" ? "is-live" : ""}`} role="status">
+            <span>{liveStatusLabel(liveStatus)}</span>
+            <small>{liveReason ?? "Binance Spot · WebSocket công khai"}</small>
+          </div>
+        )}
       </section>
 
-      {error && <p className="alert" role="alert"><b>✕ lỗi</b> {error}</p>}
+      {mode === "replay" && error && <p className="alert" role="alert"><b>✕ lỗi</b> {error}</p>}
+      {mode === "live" && ["stale", "error", "disabled", "stopped"].includes(liveStatus) && liveReason &&
+        <p className="alert" role="alert"><b>✕ live</b> {liveReason}</p>}
 
       <section className="stats" aria-label="Chỉ số chính">
         <Stat label="mid-price" value={num(f.mid_price, 2)} source="(ask1 + bid1) / 2" />
@@ -265,10 +387,12 @@ export function LOBApp() {
       </section>
 
       <section className="quality" aria-label="Trạng thái dữ liệu">
-        <div><span className="lbl">replay data</span><strong>{symbolStatus?.status === "ready" ? "sẵn sàng" : "chưa có"}</strong>
-          <span className="src">{symbolStatus ? `${num(symbolStatus.row_count, 0)} dòng · ${symbolStatus.partition_count} partition` : "chưa có manifest"}</span></div>
-        <div><span className="lbl">khoảng quan sát</span><strong>{symbolStatus?.first_date_utc ?? "—"} → {symbolStatus?.last_date_utc ?? "—"}</strong>
-          <span className="src">{formatTime(snapshot?.timestamp_utc)}</span></div>
+        <div><span className="lbl">{mode === "live" ? "nguồn dữ liệu" : "replay data"}</span>
+          <strong>{mode === "live" ? liveStatusLabel(liveStatus) : symbolStatus?.status === "ready" ? "sẵn sàng" : "chưa có"}</strong>
+          <span className="src">{mode === "live" ? liveReason ?? "Binance Spot · WebSocket công khai" : symbolStatus ? `${num(symbolStatus.row_count, 0)} dòng · ${symbolStatus.partition_count} partition` : "chưa có manifest"}</span></div>
+        <div><span className="lbl">{mode === "live" ? "cập nhật gần nhất" : "khoảng quan sát"}</span>
+          <strong>{mode === "live" ? formatTime(snapshot?.timestamp_utc) : `${symbolStatus?.first_date_utc ?? "—"} → ${symbolStatus?.last_date_utc ?? "—"}`}</strong>
+          <span className="src">{mode === "live" ? "thời gian sàn · UTC hiển thị theo giờ Việt Nam" : formatTime(snapshot?.timestamp_utc)}</span></div>
         <div><span className="lbl">chất lượng book</span>
           <strong className={bookBad ? "breach" : ""}>{!snapshot ? "đang chờ dữ liệu" : bookBad ? "✕ book lỗi / có gap" : "✓ hợp lệ"}</strong>
           <span className="src">{snapshot?.quality.seconds_since_gap != null ? `${snapshot.quality.seconds_since_gap}s từ gap gần nhất` : "sequence và độ tươi"}</span></div>
@@ -277,7 +401,9 @@ export function LOBApp() {
       </section>
 
       <footer className="foot">
-        <p>API đọc partition Parquet đã chuẩn hóa và classifier đã lưu. Dữ liệu L2 chỉ được thu từ lúc bắt đầu capture; xác suất chỉ coi là kết quả nghiên cứu sau khi có đủ tuần huấn luyện, kiểm định walk-forward và tuần test 2026-11-23 → 2026-11-29 được chấm một lần.</p>
+        <p>{mode === "live"
+          ? "Nguồn live là Binance Spot public WebSocket, lưu capture liên tục và không đặt lệnh. Các xác suất chỉ xuất hiện sau khi đủ dữ liệu rolling 5 phút và có model tương thích."
+          : "Replay đọc dữ liệu đã lưu. Dữ liệu capture live không thể khôi phục sổ lệnh L2 của những ngày trước thời điểm capture."}</p>
         <a href="http://127.0.0.1:8000/docs" target="_blank" rel="noreferrer">api · 127.0.0.1:8000/docs</a>
       </footer>
     </main>

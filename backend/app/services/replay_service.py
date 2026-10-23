@@ -13,7 +13,9 @@ import pandas as pd
 from app.core.config import REPOSITORY_ROOT, load_settings
 from app.data.grid_store import GridStore
 from app.features.microstructure import compute_microstructure_features
-from app.models.lob_classifiers import LOB_CLASSIFICATION_FEATURES
+from app.labels.direction import DIRECTION_LABEL_SCHEMA_VERSION
+from app.labels.stress import STRESS_LABEL_SCHEMA_VERSION
+from app.models.lob_classifiers import LOB_CLASSIFICATION_FEATURES, LOB_CLASSIFICATION_FEATURE_SCHEMA_VERSION
 
 
 def _number(value: Any) -> float | None:
@@ -137,7 +139,25 @@ class ReplayService:
             path = self.artifact_root / key[0] / f"horizon_{key[1]}.joblib"
             try:
                 bundle = joblib.load(path) if path.is_file() else None
-                if not isinstance(bundle, dict) or bundle.get("symbol") != key[0] or int(bundle.get("horizon_seconds", -1)) != key[1]:
+                reproducibility = (bundle.get("reproducibility") or {}) if isinstance(bundle, dict) else {}
+                feature_schema = bundle.get("feature_schema_version") or reproducibility.get("feature_schema_version")
+                label_schemas = bundle.get("label_schema_versions") or {
+                    "direction": reproducibility.get("direction_label_schema_version"),
+                    "stress": reproducibility.get("stress_label_schema_version"),
+                }
+                target_names = bundle.get("target_names")
+                if (
+                    not isinstance(bundle, dict)
+                    or bundle.get("symbol") != key[0]
+                    or int(bundle.get("horizon_seconds", -1)) != key[1]
+                    or bundle.get("feature_columns") != list(LOB_CLASSIFICATION_FEATURES)
+                    or feature_schema != LOB_CLASSIFICATION_FEATURE_SCHEMA_VERSION
+                    or label_schemas.get("direction") != DIRECTION_LABEL_SCHEMA_VERSION
+                    or label_schemas.get("stress") != STRESS_LABEL_SCHEMA_VERSION
+                    or (target_names is not None and target_names != {"direction": "midprice_direction", "stress": "liquidity_stress"})
+                    or bundle.get("direction_model") is None
+                    or bundle.get("stress_model") is None
+                ):
                     bundle = None
                 self._bundles[key] = bundle
             except Exception:

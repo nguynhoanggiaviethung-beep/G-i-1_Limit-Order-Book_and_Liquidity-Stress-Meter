@@ -1,10 +1,10 @@
-# Public market data can be captured live; processed grids retain the existing replay contract.
+# Frozen submission research settings. This retrospective archive pilot uses
+# 2026-09-28 through 2026-10-18 and is separate from live dashboard data.
 data:
-  directory: data_processed/lob
-  raw_directory: data_raw/binance_spot
-  interim_directory: data_interim/binance_spot
+  directory: data_processed/cryptohftdata_pilot
+  raw_directory: data_raw/cryptohftdata
+  interim_directory: data_interim/cryptohftdata
 binance:
-  # Public market-data-only endpoint; rotate through official Spot REST alternatives if unavailable.
   base_url: https://data-api.binance.vision
   fallback_base_urls:
     - https://api.binance.com
@@ -16,12 +16,11 @@ binance:
   timeout_seconds: 4
   retries: 2
 lob:
-  collection_enabled: true
+  collection_enabled: false
   websocket_base_url: wss://stream.binance.com:443
   websocket_fallback_urls:
     - wss://data-stream.binance.vision:443
     - wss://stream.binance.com:9443
-  # 100 levels cover the displayed top-20 book and minimize REST snapshot latency/weight.
   depth_snapshot_limit: 100
   update_speed: 100ms
   sampling_interval_seconds: 1
@@ -34,8 +33,6 @@ lob:
   primary_horizon_seconds: 5
   depth_levels: 20
   direction_delta_quantile: 0.5
-  # Composite stress combines upper spread/impact/RV tails and low depth.
-  # It avoids a degenerate label when spread_ticks has a large point mass at one tick.
   stress_definition: composite
   stress_quantile: 0.975
   stress_depth_quantile: 0.025
@@ -50,12 +47,12 @@ lob:
     ETHUSDT: 0.01
   max_missing_feature_fraction: 0.10
   max_staleness_seconds: 2
-  # Freeze collection and evaluation to full UTC weeks. Validation runs weekly;
-  # the last full week is held out once after model selection.
-  first_validation_week_utc: "2026-11-02T00:00:00Z"
-  development_end_utc: "2026-11-22T23:59:59Z"
-  untouched_test_start_utc: "2026-11-23T00:00:00Z"
-  untouched_test_end_utc: "2026-11-29T23:59:59Z"
+  # Historical archive pilot: train 2026-09-28 to 2026-10-04, validate 2026-10-05 to 2026-10-11,
+  # and hold out 2026-10-12 to 2026-10-18. One validation fold; not the prospective study.
+  first_validation_week_utc: "2026-10-05T00:00:00Z"
+  development_end_utc: "2026-10-11T23:59:59Z"
+  untouched_test_start_utc: "2026-10-12T00:00:00Z"
+  untouched_test_end_utc: "2026-10-18T23:59:59Z"
   embargo_seconds: 300
   feature_lookback_seconds: 300
   deeplob_lookback_seconds: 100

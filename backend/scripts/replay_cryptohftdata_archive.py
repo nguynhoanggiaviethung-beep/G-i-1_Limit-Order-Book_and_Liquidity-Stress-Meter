@@ -354,6 +354,7 @@ def _replay_symbol(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--settings", type=Path, default=REPOSITORY_ROOT / "config" / "settings.yaml", help="Research settings; defaults to the isolated submission archive settings")
     parser.add_argument("--start-date", required=True, type=date.fromisoformat)
     parser.add_argument("--end-date", required=True, type=date.fromisoformat)
     parser.add_argument("--symbol", action="append", choices=("BTCUSDT", "ETHUSDT"), help="Repeat for each symbol; defaults to both")
@@ -364,7 +365,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.end_date < args.start_date:
         raise SystemExit("--end-date must be on or after --start-date")
-    settings = load_settings()
+    settings_path = args.settings if args.settings.is_absolute() else REPOSITORY_ROOT / args.settings
+    settings = load_settings(settings_path)
     input_root = args.input_root or (REPOSITORY_ROOT / "data_raw" / "cryptohftdata" / "binance_spot")
     output_root = args.output_root or (settings.data_dir / "grid")
     manifest_root = args.manifest_root or (REPOSITORY_ROOT / "outputs" / "manifests")

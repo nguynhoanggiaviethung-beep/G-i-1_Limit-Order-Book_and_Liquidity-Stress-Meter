@@ -13,9 +13,9 @@ from sklearn.isotonic import IsotonicRegression
 from app.evaluation.lob_classification import classification_metrics
 from app.data.grid_store import GridStore
 from app.features.classification_features import build_classification_features
-from app.labels.direction import fit_direction_delta, make_direction_labels
-from app.labels.stress import StressThresholds, make_stress_labels
-from app.models.lob_classifiers import LOB_CLASSIFICATION_FEATURES, make_classifiers
+from app.labels.direction import DIRECTION_LABEL_SCHEMA_VERSION, fit_direction_delta, make_direction_labels
+from app.labels.stress import STRESS_LABEL_SCHEMA_VERSION, StressThresholds, make_stress_labels
+from app.models.lob_classifiers import LOB_CLASSIFICATION_FEATURES, LOB_CLASSIFICATION_FEATURE_SCHEMA_VERSION, make_classifiers
 from app.services.replay_service import ReplayService
 from scripts import run_deeplob_classification, run_lob_classification
 from scripts.run_lob_classification import _apply_isotonic, _study_provenance
@@ -69,16 +69,25 @@ def test_study_provenance_records_config_schema_data_window_and_seed():
         "symbol": ["BTCUSDT", "BTCUSDT"],
     })
     settings = SimpleNamespace(
-        lob_development_end_utc="2026-11-22T23:59:59Z",
-        lob_untouched_test_start_utc="2026-11-23T00:00:00Z",
-        lob_untouched_test_end_utc="2026-11-29T23:59:59Z",
+        lob_first_validation_week_utc="2026-10-05T00:00:00Z",
+        lob_development_end_utc="2026-10-11T23:59:59Z",
+        lob_untouched_test_start_utc="2026-10-12T00:00:00Z",
+        lob_untouched_test_end_utc="2026-10-18T23:59:59Z",
     )
-    provenance = _study_provenance(frame, settings, (1, 5, 10))
+    provenance = _study_provenance(
+        frame,
+        settings,
+        (1, 5, 10),
+        run_lob_classification.REPOSITORY_ROOT / "config" / "settings.yaml",
+        "historical_archive_pilot",
+    )
     assert provenance["configuration_file"] == "config/settings.yaml"
     assert len(provenance["configuration_sha256"]) == 64
     assert provenance["feature_schema_version"] == "lob-classification-features.v1"
     assert provenance["direction_label_schema_version"] == "midprice-direction.v1"
     assert provenance["stress_label_schema_version"] == "liquidity-stress.v1"
+    assert provenance["python_version"]
+    assert {"numpy", "pandas", "scikit-learn"}.issubset(provenance["dependency_versions"])
     assert provenance["observed_data_start_utc"] == "2026-10-01T00:00:00+00:00"
     assert provenance["observed_data_end_utc"] == "2026-10-01T00:00:01+00:00"
     assert provenance["symbols"] == ["BTCUSDT"]
@@ -223,11 +232,12 @@ def test_calibrated_multiclass_probabilities_are_renormalized():
 
 
 @pytest.mark.parametrize(
-    ("runner", "filename", "settings"),
+    ("runner", "filename", "metrics_root", "settings"),
     [
         (
             run_lob_classification,
             "classification_metrics.json",
+                "outputs/tables/historical_archive_pilot",
             SimpleNamespace(
                 symbols=("BTCUSDT",), lob_classification_horizons_seconds=(5,),
                 lob_embargo_seconds=300, lob_feature_lookback_seconds=300,
@@ -237,16 +247,17 @@ def test_calibrated_multiclass_probabilities_are_renormalized():
         (
             run_deeplob_classification,
             "deeplob_metrics.json",
+                "outputs/tables",
             SimpleNamespace(symbols=("BTCUSDT",), lob_classification_horizons_seconds=(5,)),
         ),
     ],
 )
-def test_final_test_runners_refuse_a_repeat_without_explicit_override(monkeypatch, tmp_path, runner, filename, settings):
-    output = tmp_path / "outputs" / "tables" / "BTCUSDT" / filename
+def test_final_test_runners_refuse_a_repeat_without_explicit_override(monkeypatch, tmp_path, runner, filename, metrics_root, settings):
+    output = tmp_path / metrics_root / "BTCUSDT" / filename
     output.parent.mkdir(parents=True)
     output.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(runner, "REPOSITORY_ROOT", tmp_path)
-    monkeypatch.setattr(runner, "load_settings", lambda: settings)
+    monkeypatch.setattr(runner, "load_settings", lambda _path: settings)
     monkeypatch.setattr(sys, "argv", ["runner.py", "--symbol", "BTCUSDT", "--horizon", "5"])
     with pytest.raises(SystemExit, match="already exists"):
         runner.main()
@@ -318,7 +329,31 @@ def test_loaded_artifact_threshold_is_returned_unchanged(tmp_path):
     service = ReplayService(artifact_root=tmp_path)
     response = service.predict_features("BTCUSDT", None, 5, {})
     assert response["status"] == "unavailable"
-    assert response["stress_probability_threshold"] == pytest.approx(0.37)
+    assert response["stress_probability_threshold"] is None
+
+
+def test_artifact_loader_requires_matching_target_and_schema_metadata(tmp_path):
+    path = tmp_path / "BTCUSDT" / "horizon_5.joblib"
+    path.parent.mkdir(parents=True)
+    metadata = {
+        "symbol": "BTCUSDT",
+        "horizon_seconds": 5,
+        "feature_columns": list(LOB_CLASSIFICATION_FEATURES),
+        "feature_schema_version": LOB_CLASSIFICATION_FEATURE_SCHEMA_VERSION,
+        "label_schema_versions": {"direction": DIRECTION_LABEL_SCHEMA_VERSION, "stress": STRESS_LABEL_SCHEMA_VERSION},
+        "target_names": {"direction": "midprice_direction", "stress": "liquidity_stress"},
+        "direction_model": {"fixture": "direction"},
+        "stress_model": {"fixture": "stress"},
+    }
+    joblib.dump(metadata, path)
+    service = ReplayService(artifact_root=tmp_path)
+    assert service._bundle("BTCUSDT", 5) is not None
+
+    incompatible = dict(metadata)
+    incompatible["feature_schema_version"] = "lob-classification-features.old"
+    joblib.dump(incompatible, path)
+    service = ReplayService(artifact_root=tmp_path)
+    assert service._bundle("BTCUSDT", 5) is None
 
 
 def test_api_rejects_artifact_for_another_symbol(tmp_path):

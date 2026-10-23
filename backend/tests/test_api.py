@@ -75,6 +75,8 @@ def test_active_api_contract_replaces_collector_routes(service):
         "/api/v1/predict",
         "/api/v1/models",
         "/api/v1/evaluation/{symbol}",
+        "/api/v1/live/status",
+        "/api/v1/live/{symbol}/stream",
     ):
         assert path in paths
     assert "/api/v1/collector/status" not in paths

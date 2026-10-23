@@ -78,10 +78,12 @@ def validate_partition(path: Path, symbol: str) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--symbol", choices=("BTCUSDT", "ETHUSDT"))
+    parser.add_argument("--settings", type=Path, default=REPOSITORY_ROOT / "config" / "settings_live.yaml", help="Settings file used to find the default grid and symbols")
     parser.add_argument("--grid-root", type=Path, help="Defaults to configured data directory/grid")
     parser.add_argument("--report", type=Path, help="Defaults to outputs/manifests/lob_validation_<UTC>.json")
     args = parser.parse_args()
-    settings = load_settings()
+    settings_path = args.settings if args.settings.is_absolute() else REPOSITORY_ROOT / args.settings
+    settings = load_settings(settings_path)
     root = args.grid_root or (settings.data_dir / "grid")
     if not root.is_absolute():
         root = REPOSITORY_ROOT / root

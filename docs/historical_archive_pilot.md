@@ -1,6 +1,6 @@
 # Historical order-book archive pilot
 
-This document records a retrospective pilot using CryptoHFTData's hourly Binance Spot L2 and trade archive. It is separate from the prospective 2026-11 study in `config/settings.yaml` and `docs/research_design.md`.
+This document records the retrospective archive study used for the 2026-10-26 submission. It remains explicitly labeled a historical pilot; it is not a prospective or live-predictive study. `config/settings.yaml` freezes this pilot. The dashboard and live collector use `config/settings_live.yaml`.
 
 ## Source and use
 
@@ -24,7 +24,7 @@ All dates below are UTC and cover full weeks:
 | Walk-forward validation | 2026-10-05 through 2026-10-11 |
 | Holdout evaluation | 2026-10-12 through 2026-10-18 |
 
-The pilot has one validation fold and one holdout week. It provides an end-to-end historical training artifact, but it is not the three-fold prospective study scheduled in `config/settings.yaml` and is not evidence of live predictive performance.
+The pilot has one validation fold and one holdout week. The holdout was scored once and is not to be reopened for model selection. It is not a three-fold prospective study and is not evidence of live predictive performance.
 
 ## Completed run
 
@@ -39,7 +39,7 @@ The primary five-second holdout results are:
 
 The positive stress rate was about 6.3% in BTC development and 6.4% in ETH development. The holdout rates differ by symbol, showing some period drift. All three horizons (1, 5, and 10 seconds) have trained artifacts for both symbols. Full results, including calibration, class-level metrics, paired tests, and other horizons, are in `outputs/tables/historical_archive_pilot/<SYMBOL>/classification_metrics.json`; model artifacts are in `backend/artifacts/meter/<SYMBOL>/horizon_<SECONDS>.joblib`.
 
-The source replay grid and features remain isolated from the app. Restart the API after training to reload the artifacts. The dashboard will only return predictions when the selected symbol/time has a recent valid book in its configured grid; these pilot artifacts do not make the provider's historical book available through the dashboard.
+The source replay grid and features remain isolated from the dashboard. Restart the API after training to reload artifacts. Replay predictions still require a recent valid book in the configured replay grid; continuous live mode scores the public Binance stream separately after the live rolling features have warmed up. The pilot archive does not make its provider's historical book available through the dashboard, and live scores do not extend the archive holdout evidence.
 
 ## Download, replay, and train
 
@@ -63,20 +63,13 @@ $PY = ".\.venv\Scripts\python.exe"
   --grid-root data_processed\cryptohftdata_pilot\grid `
   --report outputs\manifests\historical_archive_pilot\lob_validation.json
 & $PY backend\scripts\build_lob_classification_dataset.py `
-  --settings config\settings_historical_pilot.yaml
-
-# Train the historical pilot and keep its metrics separate from the prospective test.
-& $PY backend\scripts\run_lob_classification.py `
-  --settings config\settings_historical_pilot.yaml `
-  --metrics-dir outputs\tables\historical_archive_pilot `
-  --study-label historical_archive_pilot `
-  --max-train-rows 50000
+  --settings config\settings.yaml
 ```
 
-The training command caps each individual fit at 50,000 class-stratified rows to keep this CPU pilot tractable. It writes model artifacts to `backend/artifacts/meter/<SYMBOL>/`; the app can use those models on data from its configured replay grid. Pilot metrics are kept separately under `outputs/tables/historical_archive_pilot/<SYMBOL>/` so they do not occupy the prospective study's final-test output path. The artifact metadata records the historical-pilot label, sample cap, and settings-file hash.
+The saved metrics and artifacts are the completed historical run. The final holdout was scored once. Do not rerun `run_lob_classification.py` to prepare the submission; its repeat guard exists to protect the holdout. The training run capped each fit at 50,000 class-stratified rows and wrote artifacts to `backend/artifacts/meter/<SYMBOL>/`. Metrics remain under `outputs/tables/historical_archive_pilot/<SYMBOL>/`.
 
 ## Data timing and interpretation
 
 The replay clock uses the provider's `received_time` (nanoseconds converted to UTC milliseconds) as the time an event became observable. Exchange event time is retained in a separate grid field where available. This avoids assigning an update to a time before the collector received it. Provider files are replayed in published order; the book is not reconstructed by sorting sequence updates. Receive-time regressions of at most 100 ms are clamped to the preceding receive time, preserving sequence order and recording the adjustment count and maximum lag in QA; larger regressions stop replay. Missing files, sequence gaps, invalid books, coverage, and snapshot bootstraps are recorded in isolated QA outputs.
 
-The models predict the configured one-, five-, and ten-second direction and liquidity-stress targets from one-second book features. Stress thresholds and preprocessing are learned only from the applicable training/development windows. The model's saved `metrics` describe the 2026-10-12 through 2026-10-18 historical holdout, not the prospective November test week. To use model artifacts in the app, restart the API so it loads the new files, then replay data from the app's configured grid; the dashboard must not read this provider archive under the standard license.
+The models predict the configured one-, five-, and ten-second direction and liquidity-stress targets from one-second book features. Stress thresholds and preprocessing are learned only from the applicable training/development windows. Saved metrics describe the 2026-10-12 through 2026-10-18 historical holdout. To use model artifacts in the app, restart the API so it loads the saved files, then replay data from the app's configured grid; the dashboard must not read this provider archive under the standard license.

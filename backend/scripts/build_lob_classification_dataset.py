@@ -31,7 +31,7 @@ def build_partition_features(raw_frame: pd.DataFrame, previous_tail: pd.DataFram
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--settings", type=Path, default=REPOSITORY_ROOT / "config" / "settings.yaml", help="Settings file that selects the source grid and feature policy")
+    parser.add_argument("--settings", type=Path, default=REPOSITORY_ROOT / "config" / "settings_live.yaml", help="Settings file that selects the source grid and feature policy")
     parser.add_argument("--symbol", choices=("BTCUSDT", "ETHUSDT"), help="Build only one configured symbol")
     parser.add_argument("--impact-notional-usdt", type=float)
     args = parser.parse_args()

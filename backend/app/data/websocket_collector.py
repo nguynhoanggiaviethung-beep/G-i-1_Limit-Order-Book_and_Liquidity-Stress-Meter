@@ -8,7 +8,7 @@ import logging
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote
 
 from app.core.config import REPOSITORY_ROOT, Settings, load_settings
@@ -117,6 +117,9 @@ class BinanceWebSocketCollector:
         interim_root: Path | str | None = None,
         duration_seconds: float = 0,
         reconnect_max_seconds: float = 30,
+        on_book_sync: Callable[[dict[str, Any]], None] | None = None,
+        on_market_event: Callable[[dict[str, Any]], None] | None = None,
+        on_status: Callable[[str, str, str | None], None] | None = None,
     ) -> None:
         self.settings = settings or load_settings()
         root = Path(output_root) if output_root is not None else self.settings.raw_data_dir
@@ -128,9 +131,24 @@ class BinanceWebSocketCollector:
         self.interim_capture_root = self.interim_root / "captures" / self.capture_id
         self.duration_seconds = float(duration_seconds)
         self.reconnect_max_seconds = float(reconnect_max_seconds)
+        self.on_book_sync = on_book_sync
+        self.on_market_event = on_market_event
+        self.on_status = on_status
         if self.duration_seconds < 0 or self.reconnect_max_seconds < 1:
             raise ValueError("Capture duration must be non-negative and reconnect backoff at least one second")
         self.client = BinancePublicClient(self.settings)
+
+    @staticmethod
+    def _notify(callback, *args: Any) -> None:
+        if callback is None:
+            return
+        try:
+            callback(*args)
+        except Exception:
+            logger.exception("Live market callback failed")
+
+    def _notify_book_sync(self, book: LocalOrderBook, event_time_ms: int, received_ms: int) -> None:
+        self._notify(self.on_book_sync, _snapshot_checkpoint(book, event_time_ms, received_ms))
 
     def _stream_url(self, base_url: str, symbol: str) -> str:
         speed = f"@{self.settings.lob_update_speed}" if self.settings.lob_update_speed else ""
@@ -206,6 +224,7 @@ class BinanceWebSocketCollector:
             while stop_at is None or time.monotonic() < stop_at:
                 base_url = base_urls[retry % len(base_urls)]
                 url = self._stream_url(base_url, symbol)
+                self._notify(self.on_status, symbol, "connecting", f"Connecting to {base_url}")
                 pending: list[dict[str, Any]] = []
                 pending_snapshot: dict[str, Any] | None = None
                 snapshot_task: asyncio.Task | None = None
@@ -219,6 +238,7 @@ class BinanceWebSocketCollector:
                         max_queue=4096,
                     ) as websocket:
                         logger.info("Connected to Binance Spot streams for %s via %s", symbol, base_url)
+                        self._notify(self.on_status, symbol, "syncing", "WebSocket connected; synchronizing the order book")
                         if counters["websocket_messages"] > 0:
                             counters["reconnects"] += 1
                             audit("websocket_reconnected", endpoint=base_url, reconnect_count=counters["reconnects"])
@@ -259,6 +279,8 @@ class BinanceWebSocketCollector:
                                         for item in sorted(pending, key=lambda item: (int(item["event_time_ms"]), item.get("kind") == "depth_update")):
                                             event_writer.write(item)
                                         event_writer.write(_snapshot_checkpoint(candidate, checkpoint_time, snapshot_received_ms))
+                                        self._notify_book_sync(candidate, checkpoint_time, snapshot_received_ms)
+                                        self._notify(self.on_status, symbol, "live", None)
                                         counters["snapshot_bootstraps" if counters["snapshot_bootstraps"] == 0 else "snapshot_recoveries"] += 1
                                         audit(
                                             "book_synchronized", last_update_id=candidate.last_update_id,
@@ -322,6 +344,8 @@ class BinanceWebSocketCollector:
                                             for item in sorted(pending, key=lambda item: (int(item["event_time_ms"]), item.get("kind") == "depth_update")):
                                                 event_writer.write(item)
                                             event_writer.write(_snapshot_checkpoint(latest_book, checkpoint_time, received))
+                                            self._notify_book_sync(latest_book, checkpoint_time, received)
+                                            self._notify(self.on_status, symbol, "live", None)
                                             counters["snapshot_bootstraps" if counters["snapshot_bootstraps"] == 0 else "snapshot_recoveries"] += 1
                                             audit(
                                                 "book_synchronized", last_update_id=latest_book.last_update_id,
@@ -338,6 +362,7 @@ class BinanceWebSocketCollector:
                             checkpoint = _snapshot_checkpoint(latest_book, int(event["event_time_ms"]), received_ms)
                             if event["kind"] == "trade":
                                 event_writer.write(event, checkpoint=checkpoint)
+                                self._notify(self.on_market_event, event)
                                 continue
                             try:
                                 latest_book.apply_update(event)
@@ -350,6 +375,7 @@ class BinanceWebSocketCollector:
                                 )
                                 event_writer.write(event, checkpoint=checkpoint)
                                 latest_book = None
+                                self._notify(self.on_status, symbol, "syncing", "Depth sequence gap; rebuilding the local order book")
                                 pending = []
                                 snapshot_task = asyncio.create_task(self._fetch_snapshot(symbol))
                                 continue
@@ -359,10 +385,12 @@ class BinanceWebSocketCollector:
                                 audit("invalid_book_update", error=str(exc), update_id=event.get("u"))
                                 event_writer.write(event, checkpoint=checkpoint)
                                 latest_book = None
+                                self._notify(self.on_status, symbol, "syncing", f"Invalid depth update; rebuilding the local order book: {exc}")
                                 pending = []
                                 snapshot_task = asyncio.create_task(self._fetch_snapshot(symbol))
                                 continue
                             event_writer.write(event, checkpoint=checkpoint)
+                            self._notify(self.on_market_event, event)
                             if counters["websocket_messages"] % 10000 == 0:
                                 logger.info("%s: %s depth updates, %s trades", symbol, counters["depth_events"], counters["trade_events"])
 
@@ -374,6 +402,7 @@ class BinanceWebSocketCollector:
                     wait = min(self.reconnect_max_seconds, float(2 ** min(retry, 5)))
                     logger.warning("Stream for %s closed; reconnecting in %.1fs", symbol, wait)
                     audit("websocket_closed", retry_in_seconds=wait)
+                    self._notify(self.on_status, symbol, "reconnecting", f"Stream closed; retrying in {wait:.1f}s")
                     await asyncio.sleep(wait)
                 except asyncio.CancelledError:
                     raise
@@ -389,6 +418,7 @@ class BinanceWebSocketCollector:
                     wait = min(self.reconnect_max_seconds, float(2 ** min(retry, 5)))
                     logger.warning("Stream error for %s via %s: %s; reconnecting in %.1fs", symbol, base_url, exc, wait)
                     audit("websocket_error", endpoint=base_url, error=str(exc), retry_in_seconds=wait)
+                    self._notify(self.on_status, symbol, "reconnecting", f"Stream error: {exc}; retrying in {wait:.1f}s")
                     if stop_at is None or time.monotonic() + wait < stop_at:
                         await asyncio.sleep(wait)
         except asyncio.CancelledError:
@@ -436,7 +466,7 @@ class BinanceWebSocketCollector:
 
     async def run(self, symbols: tuple[str, ...] | list[str]) -> list[dict[str, Any]]:
         if not self.settings.lob_collection_enabled:
-            raise RuntimeError("Binance collection is disabled in config/settings.yaml")
+            raise RuntimeError("Binance collection is disabled in config/settings_live.yaml")
         loop = asyncio.get_running_loop()
         stop_at = loop.time() + self.duration_seconds if self.duration_seconds > 0 else None
         tasks = [asyncio.create_task(self.collect_symbol(symbol, stop_at)) for symbol in symbols]
