@@ -161,7 +161,10 @@ def _book_events(frame: pd.DataFrame, symbol: str) -> Iterator[tuple[int, dict]]
             raise ValueError(f"Unsupported provider order-book side: {bad_side!r}")
         bids = [[str(price), str(quantity)] for price, quantity in zip(prices[start:end][bid_mask], quantities[start:end][bid_mask])]
         asks = [[str(price), str(quantity)] for price, quantity in zip(prices[start:end][ask_mask], quantities[start:end][ask_mask])]
-        event_ns, event = build(key, bids, asks)
+        try:
+            event_ns, event = build(key, bids, asks)
+        except ValueError:
+            continue
         if regression_ns:
             event["provider_receive_time_regression_ms"] = regression_ns / 1_000_000
         yield event_ns, event
