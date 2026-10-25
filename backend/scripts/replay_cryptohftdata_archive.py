@@ -6,13 +6,15 @@ import argparse
 import heapq
 import json
 import os
+import re
 import sys
+import tempfile
+from collections import Counter
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Iterator
 
 import pandas as pd
-import pyarrow as pa
 import pyarrow.parquet as pq
 import zstandard as zstd
 import numpy as np
@@ -25,6 +27,18 @@ from app.data.cryptohft_replay import OneSecondBookReplay
 
 ZSTD_MAGIC = bytes.fromhex("28b52ffd")
 MAX_PROVIDER_RECEIVE_TIME_REGRESSION_NS = 100_000_000
+# Provider messages that cannot be turned into book events are skipped, never silently:
+# every skip is counted by reason and printed at the end of each symbol.
+SKIPPED_EVENTS: Counter = Counter()
+SKIPPED_EXAMPLES: dict[str, str] = {}
+
+
+def _display_path(path: Path) -> str:
+    """Repo-relative path when possible; absolute otherwise (e.g. output on another drive)."""
+    try:
+        return str(path.relative_to(REPOSITORY_ROOT))
+    except ValueError:
+        return str(path)
 
 
 def _date_range(start: date, end: date):
@@ -37,13 +51,16 @@ def _date_range(start: date, end: date):
 def _read_parquet(path: Path, columns: list[str]) -> pd.DataFrame:
     with path.open("rb") as handle:
         magic = handle.read(4)
-    if magic == ZSTD_MAGIC:
-        compressed = path.read_bytes()
-        decompressed = zstd.ZstdDecompressor().decompress(compressed)
-        table = pq.read_table(pa.BufferReader(decompressed), columns=columns)
-    else:
-        table = pq.read_table(path, columns=columns)
-    return table.to_pandas()
+    if magic != ZSTD_MAGIC:
+        return pq.read_table(path, columns=columns).to_pandas()
+    # Stream-decompress to a temporary file. ZstdDecompressor.decompress() fails on
+    # frames written by streaming encoders (no content size in the header), and
+    # holding compressed + decompressed bytes in RAM is wasteful for large hours.
+    with tempfile.TemporaryFile(dir=path.parent) as scratch:
+        with path.open("rb") as source:
+            zstd.ZstdDecompressor().copy_stream(source, scratch)
+        scratch.seek(0)
+        return pq.ParquetFile(scratch).read(columns=columns).to_pandas()
 
 
 def _as_int(value) -> int | None:
@@ -163,7 +180,10 @@ def _book_events(frame: pd.DataFrame, symbol: str) -> Iterator[tuple[int, dict]]
         asks = [[str(price), str(quantity)] for price, quantity in zip(prices[start:end][ask_mask], quantities[start:end][ask_mask])]
         try:
             event_ns, event = build(key, bids, asks)
-        except ValueError:
+        except ValueError as exc:
+            reason = re.sub(r"\d+", "#", str(exc))[:140]
+            SKIPPED_EVENTS[reason] += 1
+            SKIPPED_EXAMPLES.setdefault(reason, str(exc))
             continue
         if regression_ns:
             event["provider_receive_time_regression_ms"] = regression_ns / 1_000_000
@@ -263,10 +283,11 @@ def _write_day(
     temporary_qa = qa_path.with_suffix(".json.tmp")
     temporary_qa.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     os.replace(temporary_qa, qa_path)
+    target = _display_path(output) if rows else "KHÔNG ghi file parquet (0 giây hợp lệ)"
     print(
         f"{symbol} {day}: {valid:,}/{expected:,} seconds valid, "
         f"{qa.get('sequence_gap_count', 0)} sequence gaps, "
-        f"{qa.get('invalid_book_event_count', 0)} invalid-book events -> {output.relative_to(REPOSITORY_ROOT)}",
+        f"{qa.get('invalid_book_event_count', 0)} invalid-book events -> {target}",
         flush=True,
     )
 
@@ -290,9 +311,14 @@ def _replay_symbol(
     missing_trade_hours = 0
     hours_seen = 0
 
+    first_day, last_day = start.isoformat(), end.isoformat()
+
     def accept(row: dict) -> None:
         nonlocal buffered_day, buffered_rows
         row_day = pd.Timestamp(row["timestamp_utc"]).date().isoformat()
+        if not first_day <= row_day <= last_day:
+            # The 00:00:00 sample of the day after --end-date belongs to the next chunk.
+            return
         if buffered_day is None:
             buffered_day = row_day
         elif row_day != buffered_day:
@@ -343,6 +369,8 @@ def _replay_symbol(
         _write_day(output_root, manifest_root, symbol, buffered_day, buffered_rows, replay.daily_qa.get(buffered_day, {}), day_sources.get(buffered_day, []))
         written_days.add(buffered_day)
     for completed_day in sorted(set(replay.daily_qa) - written_days):
+        if not first_day <= completed_day <= last_day:
+            continue
         _write_day(output_root, manifest_root, symbol, completed_day, [], replay.daily_qa[completed_day], day_sources.get(completed_day, []))
 
     print(
@@ -352,6 +380,12 @@ def _replay_symbol(
         f"grid={output_root}",
         flush=True,
     )
+    if SKIPPED_EVENTS:
+        print(f"{symbol}: BỎ QUA {sum(SKIPPED_EVENTS.values()):,} message của nhà cung cấp, theo lý do:", flush=True)
+        for reason, count in SKIPPED_EVENTS.most_common(8):
+            print(f"  {count:>10,} x {reason}\n             ví dụ: {SKIPPED_EXAMPLES[reason]}", flush=True)
+        SKIPPED_EVENTS.clear()
+        SKIPPED_EXAMPLES.clear()
     return replay.qa["valid_seconds"]
 
 

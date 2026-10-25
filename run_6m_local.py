@@ -1,75 +1,162 @@
-﻿import sys
+﻿"""Tải và replay dữ liệu CryptoHFTData 6 tháng trên máy local, theo từng đợt 2 ngày.
+
+Chạy lại bao nhiêu lần cũng được: ngày nào đã có grid cho cả BTCUSDT và ETHUSDT thì bỏ qua,
+file raw đã tải thì báo "cached". Log đầy đủ từng đợt nằm ở data_interim/cryptohftdata_6m/logs/
+(thư mục này bị .gitignore loại).
+
+Ví dụ:
+    python run_6m_local.py
+    python run_6m_local.py --start 2026-05-01 --end 2026-05-10 --workers 1
+    python run_6m_local.py --skip-download      # chỉ replay, dùng file raw đã có
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import os
 import pathlib
 import subprocess
-import datetime as dt
-from concurrent.futures import ProcessPoolExecutor, as_completed
+import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-START = '2026-04-19'
-END   = '2026-10-18'
-MAX_WORKERS = 2  # Để 2 luồng giúp 16GB RAM cực kỳ dư dả, không bao giờ tràn bộ nhớ
+ROOT = pathlib.Path(__file__).resolve().parent
+GRID_ROOT = ROOT / "data_processed" / "cryptohftdata_6m" / "grid"
+MANIFEST_ROOT = ROOT / "outputs" / "manifests" / "archive_6m"
+LOG_ROOT = ROOT / "data_interim" / "cryptohftdata_6m" / "logs"
+SYMBOLS = ("BTCUSDT", "ETHUSDT")
 
-def make_chunks(start_str, end_str, days=2):
-    s = dt.date.fromisoformat(start_str)
-    e = dt.date.fromisoformat(end_str)
+DEFAULT_START = "2026-04-19"
+DEFAULT_END = "2026-10-18"
+DEFAULT_WORKERS = 2  # mỗi luồng replay dùng vài GB RAM; 2 luồng là an toàn với máy 16 GB
+
+# Ép UTF-8 cho tiến trình con để đường dẫn có dấu (vd. "Gói 1") và log không gây UnicodeError trên Windows.
+CHILD_ENV = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+
+
+def day_done(day: dt.date) -> bool:
+    return all(
+        any((GRID_ROOT / f"symbol={symbol}" / f"date={day.isoformat()}").glob("*.parquet"))
+        for symbol in SYMBOLS
+    )
+
+
+def make_chunks(start: dt.date, end: dt.date, days: int) -> list[tuple[str, str]]:
     chunks = []
-    grid_root = pathlib.Path("data_processed/cryptohftdata_6m/grid")
-    
-    while s <= e:
-        t = min(s + dt.timedelta(days=days - 1), e)
-        all_done = True
-        cur = s
-        while cur <= t:
-            d_str = cur.isoformat()
-            btc_ok = any((grid_root / "symbol=BTCUSDT" / f"date={d_str}").glob("*.parquet"))
-            eth_ok = any((grid_root / "symbol=ETHUSDT" / f"date={d_str}").glob("*.parquet"))
-            if not (btc_ok and eth_ok):
-                all_done = False
-                break
-            cur += dt.timedelta(days=1)
-            
-        if not all_done:
-            chunks.append((s.isoformat(), t.isoformat()))
-        s = t + dt.timedelta(days=1)
+    cursor = start
+    while cursor <= end:
+        last = min(cursor + dt.timedelta(days=days - 1), end)
+        span = (last - cursor).days + 1
+        if not all(day_done(cursor + dt.timedelta(days=offset)) for offset in range(span)):
+            chunks.append((cursor.isoformat(), last.isoformat()))
+        cursor = last + dt.timedelta(days=1)
     return chunks
 
-def replay_chunk(idx, total, a, b):
-    manifest_dir = f"outputs/manifests/archive_6m/part_{a}_{b}"
-    replay_cmd = [
-        sys.executable, "backend/scripts/replay_cryptohftdata_archive.py",
-        "--start-date", a,
-        "--end-date", b,
-        "--output-root", "data_processed/cryptohftdata_6m/grid",
-        "--manifest-root", manifest_dir
-    ]
-    print(f"⚡ [Replay {idx}/{total}] Đang xử lý: {a} -> {b} ...")
-    res = subprocess.run(replay_cmd, capture_output=True, text=True)
-    if res.returncode == 0:
-        return f"✅ [Replay {idx}/{total}] HOÀN TẤT: {a} -> {b}"
-    else:
-        err_msg = (res.stderr or res.stdout)[-400:]
-        return f"❌ [Replay {idx}/{total}] LỖI ({a} -> {b}):\n{err_msg}"
 
-if __name__ == '__main__':
-    chunks = make_chunks(START, END, days=2)
+def run_logged(command: list[str], log_path: pathlib.Path) -> int:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("w", encoding="utf-8", errors="replace") as log:
+        log.write("$ " + " ".join(command) + "\n\n")
+        log.flush()
+        return subprocess.run(
+            command, cwd=ROOT, env=CHILD_ENV, stdout=log, stderr=subprocess.STDOUT
+        ).returncode
+
+
+def log_tail(log_path: pathlib.Path, chars: int = 3000) -> str:
+    try:
+        return log_path.read_text(encoding="utf-8", errors="replace")[-chars:]
+    except OSError:
+        return "(không đọc được log)"
+
+
+def download_chunk(index: int, total: int, start: str, end: str) -> bool:
+    log_path = LOG_ROOT / f"download_{start}_{end}.log"
+    print(f"[Tải {index}/{total}] {start} -> {end} ...", flush=True)
+    code = run_logged(
+        [sys.executable, "backend/scripts/download_cryptohftdata_archive.py",
+         "--start-date", start, "--end-date", end],
+        log_path,
+    )
+    if code == 0:
+        print(f"[Tải {index}/{total}] xong: {start} -> {end}", flush=True)
+        return True
+    print(
+        f"[Tải {index}/{total}] LỖI ({start} -> {end}), bỏ qua replay đợt này; chạy lại script để tải tiếp.\n"
+        f"{log_tail(log_path)}\n  (log đầy đủ: {log_path})",
+        flush=True,
+    )
+    return False
+
+
+def replay_chunk(index: int, total: int, start: str, end: str) -> tuple[bool, str]:
+    log_path = LOG_ROOT / f"replay_{start}_{end}.log"
+    print(f"[Replay {index}/{total}] bắt đầu: {start} -> {end}", flush=True)
+    code = run_logged(
+        [sys.executable, "backend/scripts/replay_cryptohftdata_archive.py",
+         "--start-date", start, "--end-date", end,
+         "--output-root", str(GRID_ROOT),
+         "--manifest-root", str(MANIFEST_ROOT / f"part_{start}_{end}")],
+        log_path,
+    )
+    if code == 0:
+        return True, f"[Replay {index}/{total}] HOÀN TẤT: {start} -> {end}"
+    return False, (
+        f"[Replay {index}/{total}] LỖI (exit {code}) {start} -> {end}\n"
+        f"{log_tail(log_path)}\n  (log đầy đủ: {log_path})"
+    )
+
+
+def main() -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--start", default=DEFAULT_START, type=dt.date.fromisoformat)
+    parser.add_argument("--end", default=DEFAULT_END, type=dt.date.fromisoformat)
+    parser.add_argument("--days", type=int, default=2, help="số ngày mỗi đợt")
+    parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help="số luồng replay song song")
+    parser.add_argument("--skip-download", action="store_true", help="không tải, chỉ replay file raw đã có")
+    args = parser.parse_args()
+    if args.end < args.start or args.days < 1 or args.workers < 1:
+        raise SystemExit("--end phải >= --start; --days và --workers phải >= 1")
+
+    chunks = make_chunks(args.start, args.end, args.days)
     total = len(chunks)
-    print(f"=== CÒN {total} ĐỢT CẦN XỬ LÝ (CÁC ĐỢT ĐÃ XONG ĐƯỢC BỎ QUA TỰ ĐỘNG) ===")
+    print(f"=== CÒN {total} ĐỢT CẦN XỬ LÝ (đợt đã xong được bỏ qua tự động) ===", flush=True)
+    failures: list[str] = []
 
-    # 1. Đảm bảo tải đủ data_raw cho các đợt này trước (file đã có sẽ báo cached cực nhanh)
-    for i, (a, b) in enumerate(chunks, 1):
-        print(f"📥 [Kiểm tra/Tải {i}/{total}] {a} -> {b} ...")
-        subprocess.run([
-            sys.executable, "backend/scripts/download_cryptohftdata_archive.py",
-            "--start-date", a, "--end-date", b
-        ])
+    # Tải đợt i trong luồng chính; replay các đợt đã tải chạy nền song song, nên không phải
+    # chờ tải xong cả 6 tháng mới bắt đầu replay.
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        futures = {}
+        for index, (start, end) in enumerate(chunks, 1):
+            if not args.skip_download and not download_chunk(index, total, start, end):
+                failures.append(f"tải {start} -> {end}")
+                continue
+            futures[pool.submit(replay_chunk, index, total, start, end)] = (start, end)
+        for future in as_completed(futures):
+            ok, message = future.result()
+            print(message, flush=True)
+            if not ok:
+                failures.append("replay {} -> {}".format(*futures[future]))
 
-    # 2. Chạy Replay song song
-    print(f"\n=== BẮT ĐẦU REPLAY SONG SONG ({MAX_WORKERS} LUỒNG) ===")
-    with ProcessPoolExecutor(max_workers=MAX_WORKERS) as ex:
-        futures = [
-            ex.submit(replay_chunk, i + 1, total, a, b)
-            for i, (a, b) in enumerate(chunks)
-        ]
-        for f in as_completed(futures):
-            print(f.result())
+    remaining = [
+        day.isoformat()
+        for day in (args.start + dt.timedelta(days=n) for n in range((args.end - args.start).days + 1))
+        if not day_done(day)
+    ]
+    if failures or remaining:
+        print(f"\nCHƯA XONG: {len(failures)} đợt lỗi, còn {len(remaining)} ngày chưa có grid đủ 2 symbol.")
+        for item in failures:
+            print(f"  - {item}")
+        if remaining:
+            print(f"  Ngày còn thiếu (tối đa 10): {', '.join(remaining[:10])}")
+            print("  (ngày nhà cung cấp không có file hoặc 0 giây hợp lệ cũng nằm ở đây; xem QA trong outputs/manifests/archive_6m)")
+        print("Chạy lại script để tiếp tục.")
+        return 1
+    print(f"\nHOÀN TẤT {args.start} -> {args.end}: grid ở {GRID_ROOT}")
+    return 0
 
-    print("\n🎉 HOÀN TẤT TOÀN BỘ 6 THÁNG TRÊN Ổ D:!")
+
+if __name__ == "__main__":
+    raise SystemExit(main())

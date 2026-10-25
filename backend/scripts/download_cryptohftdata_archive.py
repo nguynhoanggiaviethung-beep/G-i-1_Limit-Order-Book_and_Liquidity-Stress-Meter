@@ -27,6 +27,14 @@ ZSTD_MAGIC = bytes.fromhex("28b52ffd")
 PARQUET_MAGIC = b"PAR1"
 
 
+def _display_path(path: Path) -> str:
+    """Repo-relative path when possible; absolute otherwise (e.g. output on another drive)."""
+    try:
+        return str(path.relative_to(REPOSITORY_ROOT))
+    except ValueError:
+        return str(path)
+
+
 class RequestPacer:
     def __init__(self, requests_per_minute: int) -> None:
         self.interval = 60.0 / requests_per_minute
@@ -70,7 +78,7 @@ def _download_one(
         size = destination.stat().st_size
         record = {
             "file": file_key,
-            "local_path": str(destination.relative_to(REPOSITORY_ROOT)),
+            "local_path": _display_path(destination),
             "status": "cached",
             "bytes": size,
             "downloaded_at_utc": None,
@@ -114,7 +122,7 @@ def _download_one(
             os.replace(temporary, destination)
             record: dict[str, Any] = {
                 "file": file_key,
-                "local_path": str(destination.relative_to(REPOSITORY_ROOT)),
+                "local_path": _display_path(destination),
                 "status": "downloaded",
                 "bytes": written,
                 "sha256": digest.hexdigest(),
