@@ -15,6 +15,7 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 from sklearn.metrics import matthews_corrcoef
 from sklearn.isotonic import IsotonicRegression
 
@@ -34,6 +35,22 @@ from app.models.lob_classifiers import LOB_CLASSIFICATION_FEATURES, LOB_CLASSIFI
 
 DIRECTION_CLASSES = ("down", "flat", "up")
 STRESS_CLASSES = (0, 1)
+# Columns that define labels, thresholds, baselines, or regimes stay float64; every other
+# model feature is stored as float32 so six months of one-second rows fit in memory.
+LABEL_INPUT_COLUMNS = (
+    "mid_price", "spread_ticks", "absolute_spread", "relative_spread_bps", "price_impact_bps",
+    "depth_notional_10", "depth_qty_10", "rv_60s", "rv_300s",
+)
+RUN_COLUMNS = tuple(dict.fromkeys((
+    "timestamp_utc", "symbol", "book_valid", "book_source", *LABEL_INPUT_COLUMNS, *LOB_CLASSIFICATION_FEATURES,
+)))
+STRESS_THRESHOLD_COLUMNS = (
+    "timestamp_utc", "book_valid", "spread_ticks", "absolute_spread", "relative_spread_bps",
+    "price_impact_bps", "depth_notional_10", "depth_qty_10", "rv_60s",
+)
+OBI_ONLY_COLUMNS = ("obi_qty_1", "obi_qty_5", "obi_qty_10", "obi_qty_20")
+OBI_PLUS_OFI_COLUMNS = (*OBI_ONLY_COLUMNS, "ofi_1s", "ofi_5s", "ofi_10s")
+FINAL_TEST_OPENED_MARKER = "final_test_opened.json"
 logger = logging.getLogger(__name__)
 
 
@@ -82,13 +99,47 @@ def _study_provenance(
     }
 
 
-def _load_features(symbol: str, settings) -> pd.DataFrame:
+def _partition_date(path: Path) -> str | None:
+    return next((part[len("date="):] for part in path.parts if part.startswith("date=")), None)
+
+
+def _read_run_columns(path: Path, extra_columns: tuple[str, ...] = ()) -> pd.DataFrame:
+    available = set(pq.ParquetFile(path).schema_arrow.names)
+    wanted = dict.fromkeys((*RUN_COLUMNS, *extra_columns))
+    frame = pd.read_parquet(path, columns=[name for name in wanted if name in available])
+    for name in extra_columns:
+        # Raw book levels are stored as decimal strings; parse them the way build_lob_sequences does.
+        if name in frame and frame[name].dtype == object:
+            frame[name] = pd.to_numeric(frame[name], errors="coerce")
+    for name in frame.columns:
+        if name not in LABEL_INPUT_COLUMNS and frame[name].dtype == np.float64:
+            frame[name] = frame[name].astype(np.float32)
+    return frame
+
+
+def _load_features(
+    symbol: str,
+    settings,
+    end_exclusive: pd.Timestamp | None = None,
+    extra_columns: tuple[str, ...] = (),
+    start_inclusive: pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    """Load the run columns (plus ``extra_columns``); with ``end_exclusive`` no partition on or after that date is opened.
+
+    ``start_inclusive`` likewise skips partitions dated before it.
+    """
     root = settings.data_dir / "features"
     paths = sorted(root.rglob("features_1s.parquet"))
     paths = [path for path in paths if f"symbol={symbol}" in path.parts]
+    if end_exclusive is not None:
+        last_date = end_exclusive.tz_convert("UTC").date().isoformat()
+        paths = [path for path in paths if (_partition_date(path) or "9999-12-31") < last_date]
+    if start_inclusive is not None:
+        first_date = start_inclusive.tz_convert("UTC").date().isoformat()
+        paths = [path for path in paths if (_partition_date(path) or "0000-01-01") >= first_date]
     if not paths:
         raise FileNotFoundError(f"No feature partitions for {symbol} under {root}; run build_lob_classification_dataset.py first")
-    frame = pd.concat((pd.read_parquet(path) for path in paths), ignore_index=True)
+    frame = pd.concat((_read_run_columns(path, extra_columns) for path in paths), ignore_index=True)
     frame["timestamp_utc"] = pd.to_datetime(frame["timestamp_utc"], utc=True, errors="coerce")
     frame = frame.dropna(subset=["timestamp_utc"]).sort_values("timestamp_utc", kind="mergesort")
     duplicate_count = int(frame.duplicated("timestamp_utc", keep="last").sum())
@@ -113,6 +164,18 @@ def _align_probabilities(model, x: pd.DataFrame, class_order: tuple[object, ...]
         if label in positions and column < raw.shape[1]:
             aligned[:, positions[label]] = raw[:, column]
     return aligned
+
+
+def _predict_with_probabilities(model, x: pd.DataFrame, class_order: tuple[object, ...]) -> tuple[np.ndarray, np.ndarray]:
+    """Score once: the label is the argmax of the aligned probabilities.
+
+    Random-forest, XGBoost and multinomial Logistic ``predict`` are this argmax (first class
+    wins ties); binary Logistic differs only if a probability rounds to exactly 0.5.
+    This saves a second pass of the pipeline over the validation rows.
+    """
+    probabilities = _align_probabilities(model, x, class_order)
+    labels = np.asarray(class_order)[np.argmax(probabilities, axis=1)]
+    return labels, probabilities
 
 
 def _threshold_for_stress(probabilities: np.ndarray, truth: np.ndarray) -> float:
@@ -204,25 +267,57 @@ def _bounded_sample(x: pd.DataFrame, y: pd.Series, maximum: int, seed: int = 42)
     if len(y) <= maximum:
         return x, y
     rng = np.random.default_rng(seed)
-    counts = y.value_counts()
-    quotas = {label: max(1, int(maximum * count / len(y))) for label, count in counts.items()}
+    # Work on integer codes: sorted codes give groupby's label order, and counting codes
+    # keeps value_counts' order, so the random draws match the label-based version.
+    codes, uniques = pd.factorize(y, sort=True)
+    counts = pd.Series(codes[codes >= 0]).value_counts()
+    quotas = {int(code): max(1, int(maximum * count / len(y))) for code, count in counts.items()}
     while sum(quotas.values()) > maximum:
-        label = max((key for key in quotas if quotas[key] > 1), key=lambda key: quotas[key], default=None)
-        if label is None:
+        code = max((key for key in quotas if quotas[key] > 1), key=lambda key: quotas[key], default=None)
+        if code is None:
             break
-        quotas[label] -= 1
-    selected = []
-    for label, group in y.groupby(y):
-        indices = group.index.to_numpy()
-        quota = min(len(indices), quotas.get(label, 0))
-        selected.extend(rng.choice(indices, size=quota, replace=False).tolist())
+        quotas[code] -= 1
+    index_values = y.index.to_numpy()
+    parts = []
+    for code in range(len(uniques)):
+        indices = index_values[codes == code]
+        quota = min(len(indices), quotas.get(code, 0))
+        parts.append(rng.choice(indices, size=quota, replace=False))
+    selected = np.concatenate(parts) if parts else np.asarray([], dtype=index_values.dtype)
     if len(selected) < maximum:
-        remaining = np.setdiff1d(y.index.to_numpy(), np.asarray(selected, dtype=y.index.dtype), assume_unique=False)
+        remaining = np.setdiff1d(index_values, selected.astype(y.index.dtype), assume_unique=False)
         fill = min(maximum - len(selected), len(remaining))
         if fill:
-            selected.extend(rng.choice(remaining, size=fill, replace=False).tolist())
-    selected = sorted(selected)
+            selected = np.concatenate([selected, rng.choice(remaining, size=fill, replace=False)])
+    selected = np.sort(selected)
     return x.loc[selected], y.loc[selected]
+
+
+def _sampled_training(frame: pd.DataFrame, labels: pd.Series, mask: pd.Series, columns, max_train_rows: int):
+    """Sample training origins from labels first, then slice only those feature rows.
+
+    The class-stratified selection depends on labels alone, so this picks exactly the rows
+    ``_bounded_sample`` would pick from the full slice without materializing it.
+    """
+    y = labels.loc[mask]
+    _, y = _bounded_sample(y, y, max_train_rows)
+    return frame.loc[y.index, list(columns)], y
+
+
+def _with_depth_qty_10(frame: pd.DataFrame) -> pd.DataFrame:
+    if "depth_qty_10" not in frame:
+        frame["depth_qty_10"] = pd.to_numeric(frame.get("bid_depth_qty_10"), errors="coerce") + pd.to_numeric(frame.get("ask_depth_qty_10"), errors="coerce")
+    return frame
+
+
+def _threshold_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    return frame.loc[:, [name for name in STRESS_THRESHOLD_COLUMNS if name in frame]]
+
+
+def _warm_share(frame: pd.DataFrame, mask: pd.Series) -> float | None:
+    if "book_source" not in frame or not mask.any():
+        return None
+    return float((frame.loc[mask, "book_source"] == "warm_start").mean())
 
 
 def _runtime_profile(model, x: pd.DataFrame) -> dict[str, object]:
@@ -267,8 +362,7 @@ def _fit_candidates(task: str, x_train: pd.DataFrame, y_train: pd.Series, x_vali
         try:
             x_fit, y_fit = _bounded_sample(x_train, y_train, max_train_rows)
             estimator.fit(x_fit, y_fit.to_numpy())
-            y_pred = estimator.predict(x_valid)
-            probabilities = _align_probabilities(estimator, x_valid, class_order)
+            y_pred, probabilities = _predict_with_probabilities(estimator, x_valid, class_order)
             metrics = classification_metrics(
                 y_valid.to_numpy(), y_pred, probabilities,
                 labels=list(class_order), stress=(task == "stress"),
@@ -316,16 +410,17 @@ def _collect_selected_oos(task: str, model_name: str, frame: pd.DataFrame, times
             labels = make_direction_labels(frame, horizon, delta)
         else:
             thresholds = fit_primary_stress_thresholds(
-                _stress_threshold_rows(frame, times < cutoff, stress_definition),
+                _stress_threshold_rows(_threshold_frame(frame), times < cutoff, stress_definition),
                 stress_definition, stress_quantile, stress_depth_quantile,
             )
             labels = make_stress_labels(frame, horizon, thresholds)
         train_mask = (times < cutoff) & labels.notna()
         valid_mask = (times >= start) & (times < end - pd.Timedelta(seconds=horizon)) & labels.notna()
-        y_train, y_valid = labels.loc[train_mask], labels.loc[valid_mask]
-        if y_train.nunique() < 2 or y_valid.empty:
+        y_valid = labels.loc[valid_mask]
+        if labels.loc[train_mask].nunique() < 2 or y_valid.empty:
             continue
-        estimator = _fit_final(task, model_name, frame.loc[train_mask, LOB_CLASSIFICATION_FEATURES], y_train.astype(int) if task == "stress" else y_train, max_train_rows)
+        x_train, y_train = _sampled_training(frame, labels, train_mask, LOB_CLASSIFICATION_FEATURES, max_train_rows)
+        estimator = _fit_final(task, model_name, x_train, y_train.astype(int) if task == "stress" else y_train, max_train_rows)
         x_valid = frame.loc[valid_mask, LOB_CLASSIFICATION_FEATURES]
         truth_parts.append(y_valid.to_numpy())
         probability_parts.append(_align_probabilities(estimator, x_valid, class_order))
@@ -379,48 +474,69 @@ def run_symbol(
     settings_path: Path,
     artifact_root: Path,
     study_label: str,
+    score_final_test: bool = True,
+    output_dir: Path | None = None,
 ) -> dict:
-    all_frame = _load_features(symbol, settings)
-    if "depth_qty_10" not in all_frame:
-        all_frame["depth_qty_10"] = pd.to_numeric(all_frame.get("bid_depth_qty_10"), errors="coerce") + pd.to_numeric(all_frame.get("ask_depth_qty_10"), errors="coerce")
-    all_times = pd.to_datetime(all_frame["timestamp_utc"], utc=True)
+    """Walk-forward on development data and, unless ``score_final_test`` is False, score the untouched test.
+
+    With ``output_dir``, an opened-marker is written there before any test partition is read, and
+    per-second test predictions of every pre-specified model are saved there as Parquet.
+    """
     test_start = pd.Timestamp(settings.lob_untouched_test_start_utc)
     test_end = pd.Timestamp(settings.lob_untouched_test_end_utc) + pd.Timedelta(seconds=1)
-    frame = all_frame.loc[all_times < test_start].copy().reset_index(drop=True)
+    # No partition dated on or after the untouched test start is opened here. The test is loaded
+    # separately below, once models, calibration and decision thresholds are final.
+    frame = _with_depth_qty_10(_load_features(symbol, settings, end_exclusive=test_start))
+    frame = frame.loc[pd.to_datetime(frame["timestamp_utc"], utc=True) < test_start].reset_index(drop=True)
+    test_frame: pd.DataFrame | None = None
     times = pd.to_datetime(frame["timestamp_utc"], utc=True)
     folds = expanding_week_folds(settings.lob_first_validation_week_utc, settings.lob_development_end_utc)
     if not folds:
         raise RuntimeError("No full weekly walk-forward validation folds are configured")
     dev_cutoff = test_start - pd.Timedelta(seconds=embargo_seconds)
     first_cutoff = pd.Timestamp(f"{folds[0]}T00:00:00Z") - pd.Timedelta(seconds=embargo_seconds)
-    first_train = frame.loc[times < first_cutoff].copy()
+    # δ needs only the price path and validity of the first training segment.
+    first_train = frame.loc[times < first_cutoff, ["timestamp_utc", "book_valid", "mid_price"]].copy()
     if first_train.empty:
         raise RuntimeError(f"Insufficient data before validation week {folds[0]} for the first training fold")
 
     result: dict[str, object] = {
         "symbol": symbol,
-        "data_rows": int(len(all_frame)),
+        "data_rows": int(len(frame)),
         "development_rows": int(len(frame)),
         "max_train_rows_per_fit": int(max_train_rows),
-        "reproducibility": _study_provenance(all_frame, settings, horizons, settings_path, study_label),
+        "reproducibility": _study_provenance(frame, settings, horizons, settings_path, study_label),
         "study_label": study_label,
+        "final_test_scored": bool(score_final_test),
+        "validation_weeks_utc": list(folds),
+        "embargo_seconds": int(embargo_seconds),
         "model_selection_criteria": {
             "direction": {"primary": "mean_validation_macro_f1", "tie_breaker": "mean_validation_mcc"},
             "stress": {"primary": "mean_validation_pr_auc", "tie_breaker": "mean_validation_mcc"},
         },
         "horizons": {},
     }
+    # Stress thresholds depend on the fold's training window, not on the horizon.
+    stress_threshold_cache: dict[str, object] = {}
     for horizon in horizons:
+        horizon_started = time.perf_counter()
         delta = fit_direction_delta(first_train, horizon, quantile=settings.lob_direction_delta_quantile)
         direction_labels = make_direction_labels(frame, horizon, delta)
         direction_scores: dict[str, list[dict]] = {}
         stress_scores: dict[str, list[dict]] = {}
         stress_threshold_history = []
+        fold_manifest = []
         direction_fold_metrics, stress_fold_metrics = [], []
         delta_sensitivity_metrics, level_sensitivity_metrics = [], []
         delta_quantiles = sorted({max(0.1, settings.lob_direction_delta_quantile - 0.1), settings.lob_direction_delta_quantile, min(0.9, settings.lob_direction_delta_quantile + 0.1)})
+        # δ variants come from the first training segment, so their labels are fold-independent.
+        delta_variants = {}
+        for quantile in delta_quantiles:
+            delta_variant = fit_direction_delta(first_train, horizon, quantile=quantile)
+            delta_variants[quantile] = (delta_variant, make_direction_labels(frame, horizon, delta_variant))
 
         for week in folds:
+            fold_started = time.perf_counter()
             validation_start = pd.Timestamp(f"{week}T00:00:00Z")
             validation_end = validation_start + pd.Timedelta(days=7)
             train_end = validation_start - pd.Timedelta(seconds=embargo_seconds)
@@ -430,12 +546,14 @@ def run_symbol(
                 & (times < validation_end - pd.Timedelta(seconds=horizon))
                 & direction_labels.notna()
             )
-            stress_thresholds = fit_primary_stress_thresholds(
-                _stress_threshold_rows(frame, times < train_end, settings.lob_stress_definition),
-                settings.lob_stress_definition,
-                settings.lob_stress_quantile,
-                settings.lob_stress_depth_quantile,
-            )
+            if week not in stress_threshold_cache:
+                stress_threshold_cache[week] = fit_primary_stress_thresholds(
+                    _stress_threshold_rows(_threshold_frame(frame), times < train_end, settings.lob_stress_definition),
+                    settings.lob_stress_definition,
+                    settings.lob_stress_quantile,
+                    settings.lob_stress_depth_quantile,
+                )
+            stress_thresholds = stress_threshold_cache[week]
             stress_threshold_history.append({"validation_week_utc": week, **stress_thresholds.as_dict()})
             stress_labels = make_stress_labels(frame, horizon, stress_thresholds)
             stress_train_mask = (times < train_end) & stress_labels.notna()
@@ -444,13 +562,13 @@ def run_symbol(
                 & (times < validation_end - pd.Timedelta(seconds=horizon))
                 & stress_labels.notna()
             )
-            x_direction = frame.loc[train_mask, LOB_CLASSIFICATION_FEATURES]
+            x_direction, y_direction = _sampled_training(frame, direction_labels, train_mask, LOB_CLASSIFICATION_FEATURES, max_train_rows)
             xv_direction = frame.loc[valid_mask, LOB_CLASSIFICATION_FEATURES]
-            y_direction = direction_labels.loc[train_mask]
             yv_direction = direction_labels.loc[valid_mask]
             dscores, _ = _fit_candidates("direction", x_direction, y_direction, xv_direction, yv_direction, max_train_rows)
             if not y_direction.empty and not yv_direction.empty:
-                prior = y_direction.value_counts(normalize=True)
+                # The class-frequency baseline uses the full training prior, not the sample.
+                prior = direction_labels.loc[train_mask].value_counts(normalize=True)
                 majority = prior.index[0]
                 prior_probability = np.asarray([prior.get(label, 0.0) for label in DIRECTION_CLASSES])
                 baseline_probability = np.tile(prior_probability, (len(yv_direction), 1))
@@ -471,15 +589,12 @@ def run_symbol(
             for name, values in dscores.items():
                 direction_scores.setdefault(name, []).extend(values)
                 direction_fold_metrics.append({"week_utc": week, "model": name, **values[-1]})
-            obi_only = ("obi_qty_1", "obi_qty_5", "obi_qty_10", "obi_qty_20")
-            obi_plus_ofi = (*obi_only, "ofi_1s", "ofi_5s", "ofi_10s")
-            for comparison_name, columns in (("logistic_obi_only", obi_only), ("logistic_obi_plus_ofi", obi_plus_ofi)):
+            for comparison_name, columns in (("logistic_obi_only", OBI_ONLY_COLUMNS), ("logistic_obi_plus_ofi", OBI_PLUS_OFI_COLUMNS)):
                 if not y_direction.empty and not yv_direction.empty:
                     comparator = make_classifiers("direction")["logistic"]
                     comparison_x, comparison_y = _bounded_sample(x_direction.loc[:, columns], y_direction, max_train_rows)
                     comparator.fit(comparison_x, comparison_y.to_numpy())
-                    comparison_prediction = comparator.predict(xv_direction.loc[:, columns])
-                    comparison_probabilities = _align_probabilities(comparator, xv_direction.loc[:, columns], DIRECTION_CLASSES)
+                    comparison_prediction, comparison_probabilities = _predict_with_probabilities(comparator, xv_direction.loc[:, columns], DIRECTION_CLASSES)
                     comparison_metrics = classification_metrics(
                         yv_direction.to_numpy(), comparison_prediction, comparison_probabilities,
                         labels=list(DIRECTION_CLASSES), stress=False,
@@ -489,20 +604,17 @@ def run_symbol(
             # δ sensitivity is fitted from the first training segment only;
             # each variant then uses the same expanding walk-forward folds.
             for quantile in delta_quantiles:
-                delta_variant = fit_direction_delta(first_train, horizon, quantile=quantile)
-                variant_labels = make_direction_labels(frame, horizon, delta_variant)
+                delta_variant, variant_labels = delta_variants[quantile]
                 variant_train = (times < train_end) & variant_labels.notna()
                 variant_valid = (times >= validation_start) & (times < validation_end - pd.Timedelta(seconds=horizon)) & variant_labels.notna()
-                variant_y = variant_labels.loc[variant_train]
                 variant_yv = variant_labels.loc[variant_valid]
-                if variant_y.nunique() < 2 or variant_yv.empty:
+                if variant_labels.loc[variant_train].nunique() < 2 or variant_yv.empty:
                     continue
                 comparator = make_classifiers("direction")["logistic"]
-                comparison_x, comparison_y = _bounded_sample(frame.loc[variant_train, LOB_CLASSIFICATION_FEATURES], variant_y, max_train_rows)
+                comparison_x, comparison_y = _sampled_training(frame, variant_labels, variant_train, LOB_CLASSIFICATION_FEATURES, max_train_rows)
                 comparator.fit(comparison_x, comparison_y.to_numpy())
                 xv = frame.loc[variant_valid, LOB_CLASSIFICATION_FEATURES]
-                pred = comparator.predict(xv)
-                prob = _align_probabilities(comparator, xv, DIRECTION_CLASSES)
+                pred, prob = _predict_with_probabilities(comparator, xv, DIRECTION_CLASSES)
                 delta_sensitivity_metrics.append({"week_utc": week, "delta_quantile": float(quantile), "delta": float(delta_variant), **classification_metrics(variant_yv.to_numpy(), pred, prob, labels=list(DIRECTION_CLASSES))})
 
             # L sensitivity keeps the classifier fixed and varies the static
@@ -515,13 +627,12 @@ def run_symbol(
                 comparison_x, comparison_y = _bounded_sample(x_direction.loc[:, [column]], y_direction, max_train_rows)
                 comparator.fit(comparison_x, comparison_y.to_numpy())
                 xv = xv_direction.loc[:, [column]]
-                pred = comparator.predict(xv)
-                prob = _align_probabilities(comparator, xv, DIRECTION_CLASSES)
+                pred, prob = _predict_with_probabilities(comparator, xv, DIRECTION_CLASSES)
                 level_sensitivity_metrics.append({"week_utc": week, "depth_levels_L": depth, **classification_metrics(yv_direction.to_numpy(), pred, prob, labels=list(DIRECTION_CLASSES))})
 
-            x_stress = frame.loc[stress_train_mask, LOB_CLASSIFICATION_FEATURES]
+            x_stress, y_stress = _sampled_training(frame, stress_labels, stress_train_mask, LOB_CLASSIFICATION_FEATURES, max_train_rows)
+            y_stress = y_stress.astype(int)
             xv_stress = frame.loc[stress_valid_mask, LOB_CLASSIFICATION_FEATURES]
-            y_stress = stress_labels.loc[stress_train_mask].astype(int)
             yv_stress = stress_labels.loc[stress_valid_mask].astype(int)
             sscores, _ = _fit_candidates("stress", x_stress, y_stress, xv_stress, yv_stress, max_train_rows)
             if not y_stress.empty and not yv_stress.empty:
@@ -540,11 +651,50 @@ def run_symbol(
             for name, values in sscores.items():
                 stress_scores.setdefault(name, []).extend(values)
                 stress_fold_metrics.append({"week_utc": week, "model": name, **values[-1]})
+            stress_positive_train = stress_labels.loc[stress_train_mask].astype(int)
+            fold_manifest.append({
+                "symbol": symbol,
+                "horizon_seconds": horizon,
+                "validation_week_utc": week,
+                "train_start_utc": times.min().isoformat(),
+                "train_end_exclusive_utc": train_end.isoformat(),
+                "embargo_seconds": int(embargo_seconds),
+                "validation_start_utc": validation_start.isoformat(),
+                "validation_end_exclusive_utc": (validation_end - pd.Timedelta(seconds=horizon)).isoformat(),
+                "direction_train_rows": int(train_mask.sum()),
+                "direction_train_rows_fitted": int(len(y_direction)),
+                "direction_validation_rows": int(valid_mask.sum()),
+                "stress_train_rows": int(stress_train_mask.sum()),
+                "stress_validation_rows": int(stress_valid_mask.sum()),
+                "stress_positive_rate_train": float(stress_positive_train.mean()) if len(stress_positive_train) else None,
+                "warm_start_share_train": _warm_share(frame, train_mask),
+                "warm_start_share_validation": _warm_share(frame, valid_mask),
+                "seconds": round(time.perf_counter() - fold_started, 1),
+            })
+            print(f"{symbol} h={horizon} week {week}: {int(valid_mask.sum()):,} validation rows, {fold_manifest[-1]['seconds']}s", flush=True)
+
+        if not score_final_test:
+            result["horizons"][str(horizon)] = {
+                "delta": delta,
+                "delta_fitted_on": "first training segment (before the first validation week, minus embargo)",
+                "walk_forward_direction": direction_fold_metrics,
+                "walk_forward_stress": stress_fold_metrics,
+                "direction_delta_sensitivity": delta_sensitivity_metrics,
+                "direction_L_sensitivity": level_sensitivity_metrics,
+                "stress_thresholds_by_fold": stress_threshold_history,
+                "fold_manifest": fold_manifest,
+                "selection_preview": {
+                    "direction": _select_model("direction", direction_scores) if direction_scores else None,
+                    "stress": _select_model("stress", stress_scores) if stress_scores else None,
+                },
+                "seconds": round(time.perf_counter() - horizon_started, 1),
+            }
+            continue
 
         direction_name = _select_model("direction", direction_scores)
         stress_name = _select_model("stress", stress_scores)
         final_stress_thresholds = fit_primary_stress_thresholds(
-            _stress_threshold_rows(frame, times < dev_cutoff, settings.lob_stress_definition),
+            _stress_threshold_rows(_threshold_frame(frame), times < dev_cutoff, settings.lob_stress_definition),
             settings.lob_stress_definition,
             settings.lob_stress_quantile,
             settings.lob_stress_depth_quantile,
@@ -561,8 +711,7 @@ def run_symbol(
                 f"{symbol} h={horizon}: development stress-label prevalence {stress_train_positive_rate:.4f} "
                 f"is outside [{prevalence_min:.2%}, {prevalence_max:.2%}]; revise the train-only label definition before scoring the frozen test week"
             )
-        x_train = frame.loc[direction_train_mask, LOB_CLASSIFICATION_FEATURES]
-        y_train = direction_labels.loc[direction_train_mask]
+        x_train, y_train = _sampled_training(frame, direction_labels, direction_train_mask, LOB_CLASSIFICATION_FEATURES, max_train_rows)
         direction_model = _fit_final("direction", direction_name, x_train, y_train, max_train_rows)
         direction_oos_truth, direction_oos_probability = _collect_selected_oos(
             "direction", direction_name, frame, times, horizon, delta, embargo_seconds,
@@ -570,8 +719,8 @@ def run_symbol(
             settings.lob_stress_definition,
         )
         direction_calibrators = _fit_isotonic(direction_oos_truth, direction_oos_probability, DIRECTION_CLASSES)
-        xs_train = frame.loc[stress_train_mask, LOB_CLASSIFICATION_FEATURES]
-        stress_model = _fit_final("stress", stress_name, xs_train, ys_train, max_train_rows)
+        xs_train, ys_train_fit = _sampled_training(frame, final_stress_labels, stress_train_mask, LOB_CLASSIFICATION_FEATURES, max_train_rows)
+        stress_model = _fit_final("stress", stress_name, xs_train, ys_train_fit.astype(int), max_train_rows)
         stress_oos_truth, stress_oos_probability = _collect_selected_oos(
             "stress", stress_name, frame, times, horizon, delta, embargo_seconds,
             max_train_rows, folds, settings.lob_stress_quantile, settings.lob_stress_depth_quantile,
@@ -585,7 +734,7 @@ def run_symbol(
         stress_threshold = _threshold_for_stress(stress_oos_probability_calibrated, stress_oos_truth)
 
         spread_sensitivity_thresholds = fit_primary_stress_thresholds(
-            _stress_threshold_rows(frame, times < dev_cutoff, "spread_only"),
+            _stress_threshold_rows(_threshold_frame(frame), times < dev_cutoff, "spread_only"),
             "spread_only",
             settings.lob_spread_sensitivity_quantile,
             settings.lob_stress_depth_quantile,
@@ -603,12 +752,10 @@ def run_symbol(
         }
         spread_sensitivity_model = None
         if spread_sensitivity_train_y.nunique() == 2:
-            spread_sensitivity_model = _fit_final(
-                "stress", stress_name,
-                frame.loc[spread_sensitivity_train_mask, LOB_CLASSIFICATION_FEATURES],
-                spread_sensitivity_train_y,
-                max_train_rows,
+            spread_x, spread_y = _sampled_training(
+                frame, spread_sensitivity_labels, spread_sensitivity_train_mask, LOB_CLASSIFICATION_FEATURES, max_train_rows,
             )
+            spread_sensitivity_model = _fit_final("stress", stress_name, spread_x, spread_y.astype(int), max_train_rows)
         else:
             spread_sensitivity["reason"] = "Spread-only train thresholds produced a single class; sensitivity label is degenerate"
 
@@ -620,8 +767,24 @@ def run_symbol(
 
         # Do not slice or label the frozen test week until models, calibration,
         # decision thresholds, and the development prevalence guard are final.
-        test_rows = (all_times >= test_start) & (all_times < test_end)
-        test_frame = all_frame.loc[test_rows].copy().reset_index(drop=True)
+        if test_frame is None:
+            if output_dir is not None:
+                # Recorded before the first test partition is read, so a crash after this point
+                # still counts as an opened test and a rerun needs --allow-repeat-final-test.
+                output_dir.mkdir(parents=True, exist_ok=True)
+                (output_dir / FINAL_TEST_OPENED_MARKER).write_text(json.dumps({
+                    "symbol": symbol,
+                    "opened_at_utc": pd.Timestamp.now(tz="UTC").isoformat(),
+                    "first_horizon_seconds": horizon,
+                    "test_window_utc": [settings.lob_untouched_test_start_utc, settings.lob_untouched_test_end_utc],
+                }, indent=2), encoding="utf-8")
+            test_frame = _with_depth_qty_10(_load_features(symbol, settings, end_exclusive=test_end, start_inclusive=test_start))
+            loaded_times = pd.to_datetime(test_frame["timestamp_utc"], utc=True)
+            test_frame = test_frame.loc[(loaded_times >= test_start) & (loaded_times < test_end)].reset_index(drop=True)
+            result["data_rows"] = int(len(frame) + len(test_frame))
+            result["test_rows_loaded"] = int(len(test_frame))
+            if len(test_frame):
+                result["reproducibility"]["observed_data_end_utc"] = pd.to_datetime(test_frame["timestamp_utc"], utc=True).max().isoformat()
         if test_frame.empty:
             raise RuntimeError(
                 f"No data exists in the frozen final-test week {settings.lob_untouched_test_start_utc[:10]}"
@@ -751,6 +914,74 @@ def run_symbol(
                     np.column_stack([1 - stress_probs, stress_probs]),
                     labels=list(STRESS_CLASSES), stress=True,
                 )
+        # Pre-specified secondary comparisons (RQ1/RQ2 ablations and every candidate model), fitted
+        # on the same final training sample and scored in this same single pass over the test rows.
+        # They are uncalibrated, as in walk-forward; the selected, calibrated model stays the headline.
+        direction_comparisons: dict[str, np.ndarray] = {}
+        direction_prior = direction_labels.loc[direction_train_mask].value_counts(normalize=True)
+        direction_comparisons["class_frequency"] = np.tile(
+            np.asarray([direction_prior.get(label, 0.0) for label in DIRECTION_CLASSES]), (len(y_test), 1)
+        )
+        for comparison_name, columns in (("logistic_obi_only", OBI_ONLY_COLUMNS), ("logistic_obi_plus_ofi", OBI_PLUS_OFI_COLUMNS)):
+            comparator = make_classifiers("direction")["logistic"]
+            comparison_x, comparison_y = _bounded_sample(x_train.loc[:, columns], y_train, max_train_rows)
+            comparator.fit(comparison_x, comparison_y.to_numpy())
+            direction_comparisons[comparison_name] = _align_probabilities(comparator, x_test.loc[:, columns], DIRECTION_CLASSES)
+        for candidate in make_classifiers("direction"):
+            model = direction_model if candidate == direction_name else _fit_final("direction", candidate, x_train, y_train, max_train_rows)
+            direction_comparisons[candidate] = _align_probabilities(model, x_test, DIRECTION_CLASSES)
+        direction_test_comparisons = {}
+        for name, probabilities in direction_comparisons.items():
+            prediction = (
+                np.repeat(direction_prior.index[0], len(y_test)) if name == "class_frequency"
+                else np.asarray(DIRECTION_CLASSES)[np.argmax(probabilities, axis=1)]
+            )
+            direction_test_comparisons[name] = classification_metrics(
+                y_test.to_numpy(), prediction, probabilities, labels=list(DIRECTION_CLASSES), stress=False,
+            )
+        direction_test_comparisons["direction_persistence"] = classification_metrics(
+            y_test.to_numpy(), direction_persistence_test, direction_persistence_probability,
+            labels=list(DIRECTION_CLASSES), stress=False,
+        )
+        stress_comparisons: dict[str, np.ndarray] = {}
+        for candidate in make_classifiers("stress"):
+            model = stress_model if candidate == stress_name else _fit_final("stress", candidate, xs_train, ys_train_fit.astype(int), max_train_rows)
+            stress_comparisons[candidate] = _align_probabilities(model, xs_test, STRESS_CLASSES)[:, 1]
+        stress_test_comparisons = {
+            name: classification_metrics(
+                ys_test.to_numpy(), (probability >= 0.5).astype(int), np.column_stack([1.0 - probability, probability]),
+                labels=list(STRESS_CLASSES), stress=True,
+            )
+            for name, probability in stress_comparisons.items()
+        }
+        stress_test_comparisons["stress_persistence"] = stress_persistence_test_metrics
+        prediction_files = {}
+        if output_dir is not None:
+            direction_rows = {
+                "timestamp_utc": test_times.loc[test_mask].to_numpy(),
+                "y_true": y_test.astype(str).to_numpy(),
+                "rv_300s": pd.to_numeric(test_frame.loc[test_mask, "rv_300s"], errors="coerce").to_numpy(),
+                "direction_persistence": direction_persistence_test.astype(str),
+            }
+            for index, label in enumerate(DIRECTION_CLASSES):
+                direction_rows[f"selected_calibrated_p_{label}"] = direction_probability[:, index].astype(np.float32)
+            for name, probabilities in direction_comparisons.items():
+                for index, label in enumerate(DIRECTION_CLASSES):
+                    direction_rows[f"{name}_p_{label}"] = probabilities[:, index].astype(np.float32)
+            stress_persistence_column = np.full(len(ys_test), -1, dtype=np.int8)
+            stress_persistence_column[stress_persistence_mask] = stress_persistence_test
+            stress_rows = {
+                "timestamp_utc": stress_test_timestamps.to_numpy(),
+                "y_true": ys_test.to_numpy().astype(np.int8),
+                "rv_300s": pd.to_numeric(test_frame.loc[stress_test_mask, "rv_300s"], errors="coerce").to_numpy(),
+                "stress_persistence": stress_persistence_column,  # -1 where the current state is undefined
+                "selected_calibrated_p_stress": stress_probability.astype(np.float32),
+                **{f"{name}_p_stress": probability.astype(np.float32) for name, probability in stress_comparisons.items()},
+            }
+            for task, rows in (("direction", direction_rows), ("stress", stress_rows)):
+                path = output_dir / f"test_predictions_h{horizon}_{task}.parquet"
+                pd.DataFrame(rows).to_parquet(path, index=False, compression="zstd")
+                prediction_files[task] = path.name
         direction_counts = y_train.value_counts(normalize=True).to_dict()
         stress_counts = ys_train.value_counts(normalize=True).to_dict()
         artifact = {
@@ -822,14 +1053,45 @@ def run_symbol(
             "regime_cutoffs_rv_300s_train_terciles": regime_cutoffs,
             "direction_test_by_regime": direction_by_regime,
             "stress_test_by_regime": stress_by_regime,
+            "direction_test_comparisons": direction_test_comparisons,
+            "stress_test_comparisons": stress_test_comparisons,
+            "stress_test_comparisons_threshold": 0.5,
+            "test_prediction_files": prediction_files,
             "test_rows_direction": int(len(y_test)),
             "test_rows_stress": int(len(ys_test)),
-            "artifact": str(artifact_path.relative_to(REPOSITORY_ROOT)),
+            "artifact": str(artifact_path.relative_to(REPOSITORY_ROOT) if artifact_path.is_relative_to(REPOSITORY_ROOT) else artifact_path),
             "artifact_bytes": int(artifact_path.stat().st_size),
             "direction_runtime_profile": direction_runtime,
             "stress_runtime_profile": stress_runtime,
         }
     return result
+
+
+def _scalar_metrics(row: dict) -> dict:
+    return {key: value for key, value in row.items() if not isinstance(value, (dict, list))}
+
+
+def write_fold_tables(payload: dict, symbol_dir: Path) -> None:
+    """Flatten per-fold manifests and metrics into CSVs for tables and time plots."""
+    manifest_rows, metric_rows = [], []
+    for horizon, block in payload.get("horizons", {}).items():
+        manifest_rows.extend(block.get("fold_manifest", []))
+        sources = (
+            ("direction", "walk_forward_direction", None),
+            ("stress", "walk_forward_stress", None),
+            ("direction", "direction_delta_sensitivity", "delta_quantile"),
+            ("direction", "direction_L_sensitivity", "depth_levels_L"),
+        )
+        for task, key, variant in sources:
+            for row in block.get(key, []):
+                flat = _scalar_metrics(row)
+                if variant is not None:
+                    flat["model"] = f"logistic_{variant}={row.get(variant)}"
+                metric_rows.append({"symbol": payload["symbol"], "horizon_seconds": int(horizon), "task": task, **flat})
+    pd.DataFrame(manifest_rows).to_csv(symbol_dir / "fold_manifest.csv", index=False)
+    metrics = pd.DataFrame(metric_rows)
+    leading = [name for name in ("symbol", "horizon_seconds", "task", "week_utc", "model") if name in metrics]
+    metrics[leading + [name for name in metrics.columns if name not in leading]].to_csv(symbol_dir / "fold_metrics.csv", index=False)
 
 
 def main() -> int:
@@ -843,6 +1105,11 @@ def main() -> int:
     parser.add_argument("--embargo-seconds", type=int)
     parser.add_argument("--max-train-rows", type=int, default=250000, help="Deterministic class-stratified cap for each model fit")
     parser.add_argument("--allow-repeat-final-test", action="store_true", help="Explicitly allow scoring the frozen final-test week again after a prior run")
+    parser.add_argument(
+        "--development-only", action="store_true",
+        help="Run the walk-forward validation folds only. No partition dated on or after the untouched test start "
+             "is opened, no model is selected or saved, and no final-test metrics are written.",
+    )
     args = parser.parse_args()
     settings_path = args.settings if args.settings.is_absolute() else REPOSITORY_ROOT / args.settings
     metrics_dir = args.metrics_dir if args.metrics_dir.is_absolute() else REPOSITORY_ROOT / args.metrics_dir
@@ -856,24 +1123,32 @@ def main() -> int:
     minimum_embargo = max(max(horizons), settings.lob_feature_lookback_seconds, settings.lob_deeplob_lookback_seconds)
     if embargo_seconds < minimum_embargo:
         raise SystemExit(f"Embargo must be at least {minimum_embargo} seconds for the configured horizon and feature/sequence windows")
-    prior_outputs = [metrics_dir / symbol / "classification_metrics.json" for symbol in symbols]
+    # A finished score or an opened-marker left by a run that stopped after reading the test both count.
+    prior_outputs = [metrics_dir / symbol / name for symbol in symbols for name in ("classification_metrics.json", FINAL_TEST_OPENED_MARKER)]
     already_scored = [path for path in prior_outputs if path.is_file()]
-    if already_scored and not args.allow_repeat_final_test:
+    if already_scored and not args.allow_repeat_final_test and not args.development_only:
         paths = ", ".join(str(path.relative_to(REPOSITORY_ROOT)) for path in already_scored)
         raise SystemExit(f"Final-test output already exists for {paths}. Use --allow-repeat-final-test only when an intentional re-score is approved.")
-    output = {}
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+    # Each symbol is written as soon as it finishes, so a later failure cannot discard a scored test.
     for symbol in symbols:
-        output[symbol] = run_symbol(
+        symbol_dir = metrics_dir / symbol
+        payload = run_symbol(
             symbol, horizons, embargo_seconds, args.max_train_rows, settings,
             settings_path, artifact_root, args.study_label,
+            score_final_test=not args.development_only,
+            output_dir=None if args.development_only else symbol_dir,
         )
-    result_dir = metrics_dir
-    result_dir.mkdir(parents=True, exist_ok=True)
-    for symbol, payload in output.items():
-        symbol_dir = result_dir / symbol
         symbol_dir.mkdir(parents=True, exist_ok=True)
+        if args.development_only:
+            destination = symbol_dir / "walk_forward_metrics.json"
+            destination.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+            write_fold_tables(payload, symbol_dir)
+            print(f"{symbol}: wrote development walk-forward metrics and fold tables to {symbol_dir}")
+            continue
         destination = symbol_dir / "classification_metrics.json"
         destination.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+        write_fold_tables(payload, symbol_dir)
         print(f"{symbol}: wrote walk-forward and final-test metrics to {destination}")
     return 0
 

@@ -171,113 +171,148 @@ function ProbRow({ mark, label, value, tone }: { mark: string; label: string; va
   );
 }
 
+const researchGlossary = [
+  {
+    term: "Sổ lệnh (order book)",
+    meaning: "Danh sách mọi lệnh mua và bán đang chờ khớp trên sàn. Bên mua (bid) ghi giá họ sẵn sàng trả; bên bán (ask) ghi giá họ muốn nhận.",
+  },
+  {
+    term: "Mid-price",
+    meaning: "Điểm giữa giá mua cao nhất và giá bán thấp nhất. Nghiên cứu dự báo con số này sẽ tăng, giảm hay đứng yên sau vài giây.",
+  },
+  {
+    term: "Spread",
+    meaning: "Khoảng cách giữa giá bán thấp nhất và giá mua cao nhất. Spread càng nhỏ, mua bán càng rẻ.",
+  },
+  {
+    term: "OBI",
+    meaning: "Độ lệch giữa khối lượng đang chờ mua và chờ bán, từ −1 (toàn người bán) đến +1 (toàn người mua). Giống việc nhìn xem hàng người chờ mua hay hàng chờ bán dài hơn.",
+  },
+  {
+    term: "OFI",
+    meaning: "Dòng lệnh vừa đổ vào trong vài giây qua: bên mua hay bên bán đang thêm lệnh, rút lệnh nhanh hơn. OBI là ảnh chụp, OFI là đoạn phim ngắn.",
+  },
+  {
+    term: "Stress thanh khoản",
+    meaning: "Lúc thị trường trở nên khó giao dịch: spread giãn rộng, sổ lệnh mỏng, giá giật mạnh, hoặc một lệnh 2.000 USDT đã làm giá trượt nhiều.",
+  },
+  {
+    term: "Persistence",
+    meaning: "Cách đoán đơn giản nhất để so sánh: giả định mọi thứ sẽ giống vài giây trước. Giá vừa tăng thì đoán tiếp tục tăng; đang stress thì đoán vẫn stress.",
+  },
+  {
+    term: "MCC",
+    meaning: "Điểm chấm chất lượng dự báo hướng giá, từ −1 đến 1. Bằng 0 nghĩa là không hơn đoán mò; càng cao càng tốt. Không bị đánh lừa khi một lớp chiếm đa số.",
+  },
+  {
+    term: "PR-AUC",
+    meaning: "Điểm chấm khả năng báo trước stress, từ 0 đến 1. Đo xem mô hình có xếp những lúc sắp stress lên đầu danh sách cảnh báo hay không. Càng cao càng tốt.",
+  },
+  {
+    term: "Development và test",
+    meaning: "Development (19/04–23/08) dùng để xây và chọn mô hình. Test (24/08–27/09) được giấu đi suốt quá trình đó và chỉ mở ra chấm điểm đúng một lần, như một bài thi chưa từng thấy đề.",
+  },
+] as const;
+
 const researchFigures = [
   {
-    title: "Heatmap sổ lệnh · top 10",
-    file: "lob_heatmap_validation.png",
-    scope: "VALIDATION",
-    reading: "Trục ngang là thời gian; trục dọc là giá cách mid-price bao nhiêu tick. Màu xanh càng đậm nghĩa là khối lượng trong sổ lệnh tại mức giá đó càng lớn. Mỗi khung là 300 giây liên tục, bắt đầu lúc 00:00 UTC ngày 05/10/2026.",
-    numbers: "Trong khung này, spread trung vị của cả BTC và ETH là 1 tick. Độ sâu L10 trung vị: BTC có 3.801 BTC ở bid và 3.919 BTC ở ask; ETH có 33.721 ETH ở bid và 34.051 ETH ở ask. OBI L10 trung vị lần lượt là +0.002 và +0.015.",
-    finding: "Thanh khoản tập trung sát mid-price và hai phía khá cân bằng trong khung được chọn. Đây là ảnh chụp cấu trúc book ở một thời điểm; các vệt sáng thay đổi theo giây và không tự chứng minh rằng độ sâu dự báo được giá.",
+    title: "Mô hình có tốt đều qua từng tuần không?",
+    file: "6m/weekly_performance_6m.png",
+    scope: "TEST · DỮ LIỆU CHƯA TỪNG DÙNG",
+    reading: "Mỗi chấm là điểm của một tuần. Đường xanh là mô hình, đường xám là cách đoán đơn giản (persistence). Phần không tô màu là 12 tuần dùng để xây mô hình; phần tô hồng là 5 tuần test. Cột trái là dự báo hướng giá (điểm MCC), cột phải là báo trước stress (điểm PR-AUC). Khoảng dự báo: 5 giây.",
+    numbers: "Ở cả 5 tuần test, đường xanh luôn nằm trên đường xám. Ví dụ với BTC: điểm hướng giá của mô hình là 0,36–0,40, cách đoán đơn giản chỉ 0,24–0,26.",
+    finding: "Mô hình không chỉ giỏi trên dữ liệu đã học: sang dữ liệu mới nó vẫn tốt ngang như trước. Điểm stress lên xuống mạnh giữa các tuần, vì có tuần thị trường nhiều biến động, có tuần rất yên.",
   },
   {
-    title: "OBI L10 và lợi suất mid-price tương lai",
-    file: "obi_vs_forward_return_validation.png",
-    scope: "VALIDATION",
-    reading: "Chia OBI L10 thành 10 nhóm từ thấp đến cao. Trục dọc là lợi suất mid-price sau 5 giây, tính theo basis point (bps); đường xanh là trung bình, đường đỏ là trung vị.",
-    numbers: "Có 604,445 quan sát BTC và 604,442 quan sát ETH. Trung bình tăng từ −0.528 lên +0.492 bps giữa decile 1 và 10 với BTC; ETH tăng từ −0.642 lên +0.609 bps. Tương quan hạng Spearman giữa OBI và lợi suất là +0.419 (BTC), +0.369 (ETH). Trung vị bằng 0 ở phần lớn decile.",
-    finding: "Trong tuần validation, book nghiêng về bid thường đi cùng lợi suất 5 giây cao hơn theo trung bình. Nhiều trung vị vẫn bằng 0 cho thấy chuyển động nhỏ hoặc không đổi chiếm ưu thế; chuỗi theo giây tự tương quan mạnh nên đây là quan hệ mô tả, không phải kiểm định nhân quả hay bằng chứng độc lập từng giây.",
+    title: "Con số xác suất có đáng tin không?",
+    file: "6m/calibration_test_6m.png",
+    scope: "TEST · DỮ LIỆU CHƯA TỪNG DÙNG",
+    reading: "Câu hỏi của hình: khi mô hình nói \"30% khả năng stress\", thì thực tế có xảy ra khoảng 30% số lần không? Trục ngang là xác suất mô hình đưa ra, trục dọc là tỷ lệ thực sự xảy ra. Nếu đường bám sát đường chéo nét đứt thì con số xác suất đáng tin.",
+    numbers: "Đường stress bám rất sát đường chéo: sai lệch trung bình chỉ 0,4% (BTC) và 1,6% (ETH). Mô hình báo động khi xác suất vượt khoảng 42–45%; khi đã báo thì đúng 82–86% số lần.",
+    finding: "Có thể đọc thẳng con số xác suất như một mức rủi ro. Nhưng mô hình chỉ báo trước được khoảng một nửa số lần stress, nên không có cảnh báo không có nghĩa là an toàn.",
   },
   {
-    title: "Ma trận nhầm lẫn · mô hình cổ điển",
-    file: "confusion_matrices_holdout.png",
-    scope: "HOLDOUT ĐÃ CHẤM",
-    reading: "Hàng là lớp thật, cột là lớp dự báo; ô trên đường chéo là dự báo đúng. Ô màu ghi số mẫu và tỷ lệ trong hàng đó. Hình dùng mô hình được chọn trước cho từng tác vụ.",
-    numbers: "Hướng BTC (Random Forest): nhận đúng 38.6% lớp down, 86.1% flat, 37.0% up. Hướng ETH (Logistic): 40.9%, 70.0%, 49.8%. Stress XGBoost: BTC bắt được 43.1% sự kiện stress (3,574/8,287), precision 87.2%; ETH bắt 40.9% (7,844/19,193), precision 90.7%.",
-    finding: "Mô hình hướng thường nhận ra lớp flat tốt hơn hai hướng biến động. Với stress, precision cao nhưng recall chỉ khoảng 41–43%: các cảnh báo thường đúng, song mô hình bỏ lỡ hơn một nửa sự kiện. Đây là tổng hợp từ holdout đã chấm một lần.",
+    title: "Mô hình hay đoán sai kiểu gì?",
+    file: "6m/confusion_matrices_test_6m.png",
+    scope: "TEST · DỮ LIỆU CHƯA TỪNG DÙNG",
+    reading: "Mỗi hàng là điều thực sự xảy ra, mỗi cột là điều mô hình đoán. Ô trên đường chéo (từ trái trên xuống phải dưới) là đoán đúng; ô màu càng đậm thì càng nhiều lần. Bên trái là hướng giá (down = giảm, flat = đứng yên, up = tăng); bên phải là stress (1 = có stress).",
+    numbers: "Khi giá BTC thực sự tăng, mô hình đoán đúng \"tăng\" 41% số lần, đoán \"đứng yên\" 45%, và chỉ đoán ngược thành \"giảm\" 14%. Với stress, mô hình bắt được 48% số lần stress, và chỉ báo nhầm khoảng 11.650 lần trong gần 3 triệu giây bình thường.",
+    finding: "Mô hình thận trọng: khi không chắc, nó đoán \"đứng yên\" chứ hiếm khi đoán ngược chiều. Với stress, nó ít khi báo động sai, đổi lại bỏ sót khoảng một nửa.",
   },
   {
-    title: "Calibration · mô hình cổ điển",
-    file: "calibration_curves_holdout.png",
-    scope: "HOLDOUT ĐÃ CHẤM",
-    reading: "Trục ngang là xác suất trung bình mô hình đưa ra trong mỗi nhóm; trục dọc là tần suất thực tế. Đường càng gần đường chéo nét đứt thì xác suất càng khớp tần suất. Brier thấp hơn biểu thị sai số xác suất thấp hơn.",
-    numbers: "Brier stress là 0.026 cho BTC và 0.058 cho ETH; hướng lần lượt là 0.486 và 0.569. Ở bin stress cao nhất, BTC dự báo 97.6% và ghi nhận 97.3%; ETH dự báo 98.3% và ghi nhận 98.4%. Riêng lớp up ETH, bin cao nhất dự báo 93.1% nhưng tần suất thực tế là 53.1% (326 mẫu).",
-    finding: "Xác suất stress cao nhất khá sát tần suất quan sát trong các bin đã lưu. Calibration của hướng kém đồng đều hơn; điểm lớp up ETH lệch đáng kể khỏi đường chuẩn. Brier giữa stress và hướng không nên so trực tiếp vì số lớp và phân bố nhãn khác nhau.",
+    title: "OBI và OFI có thật sự giúp dự báo không?",
+    file: "6m/paired_contrasts_test_6m.png",
+    scope: "TEST · SO SÁNH TỪNG CẶP",
+    reading: "Mỗi chấm là mức chênh lệch điểm giữa hai cách dự báo, thanh ngang hai bên là khoảng sai số. Chấm nằm bên phải đường đỏ: cách thứ nhất tốt hơn. Bên trái: tệ hơn. Ba màu là ba khoảng dự báo: 1, 5 và 10 giây.",
+    numbers: "Chỉ dùng OBI thua cách đoán đơn giản ở 1 và 5 giây, và chỉ thắng nhẹ ở 10 giây (+0,02 điểm). Thêm OFI vào OBI gần như không thay đổi (tăng dưới 0,01). Kết hợp tất cả thông tin (spread, độ sâu, biến động, giao dịch) thì tăng mạnh, khoảng +0,15.",
+    finding: "Riêng OBI hay riêng OFI đều yếu. Sức mạnh đến từ việc nhìn nhiều thông tin cùng lúc. Với stress, mô hình vượt cách đoán đơn giản rõ rệt ở mọi khoảng dự báo.",
   },
   {
-    title: "Hiệu năng theo giai đoạn pilot",
-    file: "performance_over_time_pilot.png",
-    scope: "TÓM TẮT ĐÃ LƯU",
-    reading: "Mỗi ô so sánh cùng một chỉ số giữa tuần validation 05–11/10 và holdout 12–18/10: hướng dùng Macro-F1, stress dùng PR-AUC. Điểm holdout lấy từ kết quả tổng hợp đã lưu.",
-    numbers: "BTC: hướng 0.595 → 0.554 (−0.041), stress 0.517 → 0.612 (+0.095). ETH: hướng 0.562 → 0.535 (−0.027), stress 0.593 → 0.624 (+0.031).",
-    finding: "Điểm hướng giảm ở tuần holdout, còn PR-AUC stress tăng trong pilot này. Chỉ có hai tuần được so sánh nên không thể suy ra xu hướng ổn định theo thời gian; biểu đồ cũng không phải chuỗi hiệu năng liên tục.",
+    title: "Stress dễ đoán vào lúc nào?",
+    file: "6m/stress_by_regime_test_6m.png",
+    scope: "TEST · THEO TRẠNG THÁI THỊ TRƯỜNG",
+    reading: "Thị trường được chia theo mức biến động (thấp, trung bình, cao) và theo phiên giao dịch giờ quốc tế (Á, Âu, Mỹ). Cột đỏ là mô hình, cột xám là cách đoán đơn giản. Cột càng cao càng báo trước stress tốt.",
+    numbers: "Khi thị trường biến động mạnh, điểm của mô hình đạt khoảng 0,72 cho cả hai đồng. Khi thị trường yên, điểm chỉ còn 0,22 (BTC) và 0,07 (ETH). Phiên châu Âu dễ đoán nhất, phiên châu Á khó nhất.",
+    finding: "Mô hình báo stress tốt nhất khi thị trường đã bắt đầu dậy sóng. Những cú sốc bất ngờ giữa lúc yên ả thì gần như không đoán trước được; đây là giới hạn lớn nhất.",
   },
   {
-    title: "DeepLOB so với Logistic và XGBoost",
-    file: "deeplob_vs_baselines_validation.png",
-    scope: "VALIDATION · DEEPLOB",
-    reading: "Macro-F1 đo chất lượng dự báo ba lớp hướng; PR-AUC đánh giá xếp hạng xác suất stress khi lớp stress ít gặp. Cột cao hơn tốt hơn. Cả ba mô hình dùng cùng các điểm validation.",
-    numbers: "Macro-F1 hướng BTC: DeepLOB 0.568, Logistic 0.587, XGBoost 0.582; ETH: 0.507, 0.557, 0.526. PR-AUC stress BTC: 0.230, 0.371, 0.435; ETH: 0.308, 0.452, 0.534. Mỗi tác vụ dùng tối đa 8,000 mẫu train và khoảng 2,500 điểm validation.",
-    finding: "DeepLOB không vượt baseline nào trong bốn so sánh này; khoảng cách lớn nhất nằm ở stress. Đây là kết quả validation một tuần với giới hạn tính toán, chưa phải kết luận final-test.",
+    title: "Sổ lệnh trông như thế nào?",
+    file: "6m/lob_heatmap_development_6m.png",
+    scope: "DỮ LIỆU XÂY MÔ HÌNH",
+    reading: "Hình chụp 5 phút sổ lệnh ngày 17/08/2026. Trục ngang là thời gian. Trục dọc là khoảng cách tới giá giữa, tính bằng bước giá nhỏ nhất (tick, 0,01 USDT): phía trên là lệnh bán, phía dưới là lệnh mua. Màu càng đậm, càng nhiều tiền đang chờ ở mức giá đó.",
+    numbers: "Với BTC, gần như toàn bộ lệnh dồn ở mức giá sát nhất, phía sau rất mỏng. ETH thì lệnh trải đều qua 10 mức. Khoảng cách mua–bán của cả hai gần như luôn chỉ 1 bước giá.",
+    finding: "BTC trông có vẻ rất thanh khoản vì khoảng cách mua–bán siêu hẹp, nhưng một lệnh lớn sẽ nhanh chóng \"ăn\" hết lớp lệnh đầu tiên và làm giá trượt. Vì vậy, đo stress không thể chỉ nhìn spread.",
   },
   {
-    title: "Ma trận nhầm lẫn · DeepLOB",
-    file: "deeplob_confusion_validation.png",
-    scope: "VALIDATION · DEEPLOB",
-    reading: "Đọc theo hàng thật, cột dự báo; phần trăm là tỷ lệ nhận diện đúng theo từng lớp. Với stress, lớp 1 là stress và lớp 0 là không stress.",
-    numbers: "Hướng BTC: recall down/flat/up là 53.8%/70.4%/49.9%; ETH là 53.4%/67.3%/32.2%. Stress BTC có 60 ca thật: bắt 35 (58.3%), nhưng tạo 333 cảnh báo sai; precision 9.5%. ETH có 120 ca thật: bắt 65 (54.2%), 335 cảnh báo sai; precision 16.3%.",
-    finding: "DeepLOB nhận ra lớp flat tốt hơn hướng tăng, đặc biệt trên ETH. Với stress, recall khoảng 54–58% nhưng phần lớn cảnh báo là sai do nhãn dương hiếm; cần xem precision cùng recall, không chỉ nhìn tỷ lệ bắt được.",
-  },
-  {
-    title: "Calibration · DeepLOB",
-    file: "deeplob_calibration_validation.png",
-    scope: "VALIDATION · DEEPLOB",
-    reading: "Đường chéo là hiệu chỉnh hoàn hảo. Nếu một điểm nằm dưới đường này, mô hình dự báo xác suất cao hơn tần suất xảy ra; điểm nằm trên đường là dự báo thấp hơn tần suất.",
-    numbers: "Stress BTC: Brier 0.0998, ECE 0.1964; ETH: Brier 0.1141, ECE 0.2046. Ở bin stress cao nhất, xác suất trung bình 92.9% nhưng tần suất thực tế chỉ 39.1% (BTC, 23 mẫu) và 50.0% (ETH, 46 mẫu).",
-    finding: "DeepLOB có xu hướng quá tự tin với xác suất stress cao trong validation, nhất là ở các bin đuôi có ít mẫu. Không nên dùng xác suất này như mức rủi ro đã hiệu chuẩn; kết quả cũng chưa được xác nhận trên holdout.",
+    title: "OBI có liên quan đến giá sắp tới không?",
+    file: "6m/obi_vs_forward_return_development_6m.png",
+    scope: "DỮ LIỆU XÂY MÔ HÌNH",
+    reading: "Chia mọi giây thành 10 nhóm, từ lúc phe bán áp đảo (nhóm 1) đến lúc phe mua áp đảo (nhóm 10). Trục dọc là giá thay đổi bao nhiêu sau 5 giây, tính bằng bps (1 bps = 0,01%). Đường xanh là mức trung bình, đường đỏ là mức ở giữa.",
+    numbers: "Đi từ nhóm 1 đến nhóm 10, giá sau 5 giây tăng đều từ −0,6 lên +0,6 bps với BTC (ETH: −0,8 lên +0,8). Tuy vậy, ở 8 trên 10 nhóm, giá ở giữa vẫn là \"không đổi\".",
+    finding: "Phe nào đông hơn trong sổ lệnh thì giá có xu hướng nhích về phía đó, đúng như lý thuyết. Nhưng mức nhích dưới 0,01%, nhỏ hơn nhiều so với phí giao dịch thông thường (0,1%). Tức là có tín hiệu, nhưng không đủ để kiếm lời.",
   },
 ] as const;
 
 const researchAnswers = [
   {
     id: "RQ1",
-    status: "KẾT QUẢ MỘT PHẦN",
+    status: "CÓ, NHƯNG YẾU",
     tone: "mixed",
-    question: "OBI tĩnh có dự báo hướng giá tốt hơn baseline không?",
-    answer: "OBI có thêm tín hiệu so với luôn đoán lớp phổ biến nhất, nhưng chưa vượt baseline dựa trên hướng giá trước đó.",
-    evidence: "Validation 5 giây: Macro-F1 OBI-only là 0.410 (BTC) và 0.391 (ETH); class-frequency là 0.252 và 0.239; persistence cao hơn, lần lượt 0.451 và 0.412. Vì vậy, kết quả ủng hộ tín hiệu OBI nhưng chưa chứng minh OBI đủ mạnh để thắng baseline persistence.",
+    question: "Nhìn bên mua hay bên bán đông hơn (OBI) có đoán được giá sắp đi đâu không?",
+    answer: "Có một chút. OBI tốt hơn đoán mò, nhưng chỉ tốt hơn cách đoán \"giá sẽ đi tiếp như vừa rồi\" khi dự báo xa 10 giây. Với 1 và 5 giây, cách đoán đơn giản đó còn tốt hơn.",
+    evidence: "Điểm MCC của OBI so với cách đoán đơn giản: thua 0,09 ở 1 giây, thua 0,03 ở 5 giây, thắng 0,02 ở 10 giây (BTC; ETH tương tự). Kết quả lặp lại y hệt trên dữ liệu xây mô hình, nên không phải ngẫu nhiên.",
   },
   {
     id: "RQ2",
-    status: "CẢI THIỆN NHẸ",
+    status: "CÓ THÊM, NHƯNG RẤT ÍT",
     tone: "partial",
-    question: "OFI theo sự kiện có bổ sung thông tin ngoài OBI tĩnh không?",
-    answer: "Có dấu hiệu cải thiện, nhưng mức tăng nhỏ và chưa có kiểm định riêng cho phép kết luận đó là khác biệt ổn định.",
-    evidence: "Trên validation 5 giây, thêm OFI vào Logistic OBI-only tăng Macro-F1 từ 0.410 lên 0.414 ở BTC, và 0.391 lên 0.394 ở ETH. MCC tăng tương ứng 0.238→0.240 và 0.194→0.196.",
+    question: "Dòng lệnh vừa đổ vào (OFI) có cho thêm thông tin ngoài OBI không?",
+    answer: "Có, nhưng rất ít và biến mất nhanh. Thông tin về dòng lệnh chỉ có ích trong 1–2 giây, sau đó giá đã phản ánh xong.",
+    evidence: "Thêm OFI vào OBI chỉ tăng điểm khoảng 0,005–0,007 ở 1 giây và gần bằng 0 ở 10 giây. Trong khi đó, dùng đầy đủ thông tin (spread, độ sâu sổ lệnh, biến động, giao dịch) tăng tới khoảng 0,15.",
   },
   {
     id: "RQ3",
-    status: "DEEPLOB CHƯA VƯỢT BASELINE",
+    status: "KHÔNG",
     tone: "negative",
-    question: "DeepLOB có cải thiện dự báo so với các mô hình cổ điển không?",
-    answer: "Trong phép so sánh validation công bằng ở horizon 5 giây, DeepLOB không vượt Logistic hoặc XGBoost ở hướng giá lẫn stress.",
-    evidence: "Macro-F1 hướng BTC: DeepLOB 0.568, Logistic 0.587, XGBoost 0.582; ETH: 0.507, 0.557, 0.526. PR-AUC stress BTC: 0.230 so với 0.371/0.435; ETH: 0.308 so với 0.452/0.534. Mô hình cổ điển được chọn đạt Macro-F1 hướng 0.554/0.535 và PR-AUC stress 0.612/0.624 trên holdout BTC/ETH đã chấm một lần. DeepLOB dùng tối đa 8.000 mẫu train và khoảng 2.500 điểm validation; chưa có kết quả holdout.",
+    question: "Mô hình học sâu DeepLOB có tốt hơn các mô hình đơn giản không?",
+    answer: "Không. Mạng nơ-ron DeepLOB thua mô hình đơn giản (Logistic, XGBoost) ở mọi tuần thử nghiệm, nên không được đem đi thi trên dữ liệu test.",
+    evidence: "DeepLOB thua ở 12/12 tuần với cả hai đồng, cả dự báo giá lẫn stress. Ví dụ báo trước stress của BTC: DeepLOB 0,28 điểm, XGBoost 0,54. Lý do có thể là dữ liệu huấn luyện cho DeepLOB còn ít (8.000 mẫu mỗi lần), nên kết luận chỉ đúng ở quy mô này.",
   },
   {
     id: "RQ4",
-    status: "CHƯA ĐỦ ĐỂ KHẲNG ĐỊNH ỔN ĐỊNH",
-    tone: "limited",
-    question: "Kết quả có ổn định giữa cặp, tuần và chế độ biến động không?",
-    answer: "Kết quả thay đổi theo tuần và chế độ biến động; pilot hiện chỉ có một tuần validation và một tuần holdout nên chưa thể khẳng định khả năng khái quát dài hạn.",
-    evidence: "Từ validation sang holdout ở 5 giây, Macro-F1 hướng BTC/ETH giảm 0.595→0.554 và 0.562→0.535; PR-AUC stress tăng 0.517→0.612 và 0.593→0.624. Ở holdout, Macro-F1 hướng ETH tại 10 giây là 0.468; PR-AUC stress từ 1 xuống 10 giây giảm 0.772→0.559 (BTC) và 0.748→0.587 (ETH). Theo biến động cao/thấp, PR-AUC stress là 0.757/0.178 (BTC) và 0.751/0.123 (ETH).",
+    status: "ỔN QUA THỜI GIAN, KHÁC THEO THỊ TRƯỜNG",
+    tone: "mixed",
+    question: "Mô hình có còn tốt khi thị trường thay đổi không?",
+    answer: "Qua các tuần thì ổn định: mô hình thắng cách đoán đơn giản ở mọi tuần, kể cả 5 tuần test chưa từng thấy. Nhưng mức tốt phụ thuộc nhiều vào thị trường đang sôi động hay yên ả.",
+    evidence: "Điểm dự báo giá BTC trên test (0,37) gần với lúc xây mô hình (0,36). Báo trước stress đạt 0,72 điểm khi thị trường biến động mạnh, nhưng chỉ 0,07–0,22 khi thị trường yên. Lưu ý: test chỉ dài 5 tuần.",
   },
   {
     id: "RQ5",
-    status: "KẾT LUẬN NHẠY VỚI MẤT CÂN BẰNG VÀ NHÃN",
-    tone: "limited",
-    question: "Kết luận có còn đúng khi xét mất cân bằng lớp, calibration và độ nhạy nhãn không?",
-    answer: "Đánh giá bằng PR-AUC, MCC và calibration cho thấy mô hình stress có ích, nhưng nhãn spread-only suy biến; vì vậy kết quả phụ thuộc rõ vào cách định nghĩa stress.",
-    evidence: "Holdout stress composite: tỷ lệ dương 4.7% BTC và 10.3% ETH; PR-AUC 0.612/0.624, precision 87.2%/90.7% nhưng recall chỉ 43.1%/40.9%. Brier stress là 0.026/0.058. Với nhãn spread-only Q95, tỷ lệ dương chỉ khoảng 0.05% ở mỗi cặp và mô hình không dự báo được ca dương nào. Kết quả chính vì thế dùng nhãn composite và cần được đọc cùng các giới hạn này.",
+    status: "ACCURACY GÂY HIỂU NHẦM",
+    tone: "partial",
+    question: "Có nên chấm mô hình bằng tỷ lệ đoán đúng (accuracy) không?",
+    answer: "Không nên. Vì phần lớn thời gian giá đứng yên và thị trường bình thường, một cách đoán \"lười\" cũng đạt tỷ lệ đúng rất cao. Phải dùng các điểm chấm công bằng hơn như MCC và PR-AUC.",
+    evidence: "Luôn đoán \"giá đứng yên\" đã đúng 82% số lần ở khoảng 1 giây, gần bằng mô hình (84%), nhưng điểm MCC của nó bằng 0, tức không dự báo được gì. Tương tự, luôn đoán \"không stress\" đúng 96%. Khi dùng điểm chấm công bằng, mô hình vẫn hơn rõ, và xác suất của nó khớp với thực tế.",
   },
 ] as const;
 
@@ -285,21 +320,33 @@ function ResearchPage() {
   return (
     <div className="research-page">
       <section className="research-intro">
-        <span className="lbl">MICROSTRUCTURE / RESEARCH PILOT</span>
-        <h1>Hình nghiên cứu &amp; bằng chứng</h1>
-        <p>Khám phá cấu trúc sổ lệnh, tín hiệu OBI và kết quả dự báo cho BTCUSDT, ETHUSDT.</p>
+        <span className="lbl">MICROSTRUCTURE / NGHIÊN CỨU 6 THÁNG</span>
+        <h1>Nghiên cứu nói gì?</h1>
+        <p>Dùng sổ lệnh của BTC/USDT và ETH/USDT trên Binance, nghiên cứu thử trả lời hai câu: giá sẽ tăng hay giảm trong vài giây tới, và thị trường sắp trở nên khó giao dịch (stress) hay không.</p>
       </section>
 
       <aside className="research-boundary" aria-label="Phạm vi kết quả nghiên cứu">
-        <strong>Phạm vi cần nhớ</strong>
-        <p>DeepLOB mới được so sánh trên tuần validation 2026-10-05–2026-10-11; kết quả chưa vượt Logistic/XGBoost. Holdout cổ điển đã chấm một lần và các hình của holdout chỉ dùng số liệu tổng hợp đã lưu. Không có kết quả DeepLOB trên holdout.</p>
+        <strong>Tóm tắt trong 30 giây</strong>
+        <p>Sổ lệnh có chứa tín hiệu về giá sắp tới, nhưng tín hiệu rất nhỏ, không đủ bù phí giao dịch. Điểm mạnh thật sự của mô hình là báo trước lúc thị trường sắp khó giao dịch, với xác suất đáng tin. Mọi con số dưới đây chấm trên 5 tuần dữ liệu (24/08–27/09/2026) mà mô hình chưa từng thấy, và chỉ chấm một lần.</p>
       </aside>
+
+      <section className="research-glossary" aria-labelledby="research-glossary-title">
+        <div className="research-answers-head">
+          <span className="lbl">ĐỌC TRƯỚC</span>
+          <h2 id="research-glossary-title">Giải thích thuật ngữ</h2>
+        </div>
+        <dl>
+          {researchGlossary.map((item) => (
+            <div key={item.term}><dt>{item.term}</dt><dd>{item.meaning}</dd></div>
+          ))}
+        </dl>
+      </section>
 
       <section className="research-answers" aria-labelledby="research-answers-title">
         <div className="research-answers-head">
-          <span className="lbl">KẾT LUẬN TỪ PILOT · HORIZON CHÍNH 5 GIÂY</span>
-          <h2 id="research-answers-title">Trả lời câu hỏi nghiên cứu</h2>
-          <p>Các câu trả lời dưới đây tóm tắt kết quả đã lưu, kèm số liệu và giới hạn cần biết. Holdout không được chấm lại.</p>
+          <span className="lbl">KẾT LUẬN</span>
+          <h2 id="research-answers-title">Năm câu hỏi nghiên cứu và câu trả lời</h2>
+          <p>Mỗi câu gồm: câu trả lời ngắn, rồi con số cụ thể để kiểm chứng.</p>
         </div>
         <div className="research-answer-list">
           {researchAnswers.map((item) => (
@@ -311,7 +358,7 @@ function ResearchPage() {
               <div className="research-answer-body">
                 <h3>{item.question}</h3>
                 <p className="research-answer-conclusion">{item.answer}</p>
-                <p className="research-answer-evidence"><strong>Bằng chứng:</strong> {item.evidence}</p>
+                <p className="research-answer-evidence"><strong>Con số cụ thể:</strong> {item.evidence}</p>
               </div>
             </article>
           ))}
@@ -327,14 +374,14 @@ function ResearchPage() {
             </div>
             <div className="research-image"><img src={`/research/${figure.file}`} alt={figure.title} loading="lazy" /></div>
             <section className="research-analysis" aria-label={`Diễn giải: ${figure.title}`}>
-              <div><span className="lbl">cách đọc</span><p>{figure.reading}</p></div>
-              <div><span className="lbl">số liệu chính</span><p>{figure.numbers}</p></div>
-              <div><span className="lbl">ý nghĩa nghiên cứu</span><p>{figure.finding}</p></div>
+              <div><span className="lbl">cách đọc hình</span><p>{figure.reading}</p></div>
+              <div><span className="lbl">con số đáng chú ý</span><p>{figure.numbers}</p></div>
+              <div><span className="lbl">điều rút ra</span><p>{figure.finding}</p></div>
             </section>
           </article>
         ))}
       </section>
-      <p className="research-footnote">Các hình được tạo từ dữ liệu validation hoặc kết quả tổng hợp đã lưu. Chúng không cập nhật theo luồng realtime của dashboard.</p>
+      <p className="research-footnote">Các hình được tạo từ kết quả và dự báo đã lưu (backend/scripts/build_six_month_figures.py). Chúng không cập nhật theo luồng realtime của dashboard. Chi tiết phương pháp nằm trong báo cáo paper/bao_cao_nghien_cuu.md.</p>
     </div>
   );
 }

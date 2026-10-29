@@ -110,7 +110,8 @@ def _read_validation(symbol: str, *, with_book: bool = False) -> pd.DataFrame:
     return frame.sort_values("timestamp_utc", kind="mergesort").drop_duplicates("timestamp_utc", keep="last").reset_index(drop=True)
 
 
-def _confusion_figure(output: Path, metrics: dict[str, dict]) -> None:
+def _confusion_figure(output: Path, metrics: dict[str, dict], *, filename: str = "confusion_matrices_holdout.png",
+                      title: str = "Ma trận nhầm lẫn trên holdout đã chấm một lần") -> None:
     fig, axes = plt.subplots(2, 2, figsize=(12, 8.8))
     for row, symbol in enumerate(SYMBOLS):
         h = metrics[symbol]["horizons"][str(PRIMARY_HORIZON)]
@@ -132,12 +133,12 @@ def _confusion_figure(output: Path, metrics: dict[str, dict]) -> None:
                 for j in range(cm.shape[1]):
                     ax.text(j, i, f"{cm[i, j]:,.0f}\n{normalized[i, j]:.1%}", ha="center", va="center",
                             color=INK if normalized[i, j] < 0.55 else SURFACE, fontsize=8)
-    fig.suptitle("Ma trận nhầm lẫn trên holdout đã chấm một lần", fontsize=12, weight="bold")
+    fig.suptitle(title, fontsize=12, weight="bold")
     fig.text(0.5, 0.94, "Mỗi ô: số lượng dự báo và tỷ lệ theo hàng thực tế", ha="center", fontsize=9)
     fig.subplots_adjust(top=0.88, bottom=0.08, left=0.10, right=0.88, hspace=0.36, wspace=0.34)
     colorbar_axis = fig.add_axes([0.91, 0.20, 0.018, 0.60])
     fig.colorbar(image, cax=colorbar_axis, label="Tỷ lệ trong lớp thực tế")
-    fig.savefig(output / "confusion_matrices_holdout.png", dpi=180)
+    fig.savefig(output / filename, dpi=180)
     plt.close(fig)
 
 
@@ -205,11 +206,14 @@ def _performance_over_time_figure(output: Path, metrics: dict[str, dict]) -> Non
     plt.close(fig)
 
 
-def _lob_heatmap(output: Path) -> None:
-    fig, axes = plt.subplots(2, 1, figsize=(12, 7.5), sharex=True)
+def _lob_heatmap(output: Path, frames: dict[str, pd.DataFrame] | None = None, *, not_before: pd.Timestamp | None = None,
+                 filename: str = "lob_heatmap_validation.png", xlabel: str = "Thời gian UTC · tuần validation 2026-10-05",
+                 title: str = "LOB heatmap · bid/ask top-10 · dữ liệu validation trước holdout") -> None:
+    # Supplied frames may give each symbol a different window, so only the pilot shares its time axis.
+    fig, axes = plt.subplots(2, 1, figsize=(12, 7.5), sharex=frames is None)
     plotted = []
     for ax, symbol in zip(axes, SYMBOLS):
-        frame = _read_validation(symbol, with_book=True)
+        frame = frames[symbol] if frames is not None else _read_validation(symbol, with_book=True)
         frame = frame.loc[frame["book_valid"]].reset_index(drop=True)
         if len(frame) < 300:
             raise RuntimeError(f"Not enough valid pre-test snapshots for a five-minute {symbol} heatmap")
@@ -219,6 +223,10 @@ def _lob_heatmap(output: Path) -> None:
         run_starts = np.flatnonzero(np.convolve(consecutive.astype(np.int16), np.ones(window - 1, dtype=np.int16), mode="valid") == window - 1)
         if not len(run_starts):
             raise RuntimeError(f"No uninterrupted five-minute validation window found for {symbol}")
+        if not_before is not None:
+            run_starts = run_starts[(frame["timestamp_utc"].iloc[run_starts] >= not_before).to_numpy()]
+            if not len(run_starts):
+                raise RuntimeError(f"No uninterrupted five-minute window for {symbol} after {not_before}")
         start = int(run_starts[0])
         sample = frame.iloc[start : start + window]
         tick = float(sample["tick_size"].dropna().median())
@@ -233,7 +241,8 @@ def _lob_heatmap(output: Path) -> None:
                 quantity = sample[f"{side}_qty_{level}"].to_numpy(dtype=float)
                 relative_ticks = (price - mid) / tick
                 row_index = np.abs(offsets[:, None] - relative_ticks[None, :]).argmin(axis=0)
-                valid = np.isfinite(relative_ticks) & np.isfinite(quantity) & (quantity > 0)
+                # Levels beyond the plotted ±10.5 ticks are dropped rather than piled onto the edge rows.
+                valid = np.isfinite(relative_ticks) & np.isfinite(quantity) & (quantity > 0) & (np.abs(relative_ticks) <= offsets[-1] + 0.25)
                 matrix[row_index[valid], np.flatnonzero(valid)] += quantity[valid]
         edges = np.concatenate(([offsets[0] - 0.25], (offsets[:-1] + offsets[1:]) / 2, [offsets[-1] + 0.25]))
         times = mdates.date2num(sample["timestamp_utc"].dt.tz_convert(None).to_numpy())
@@ -246,19 +255,22 @@ def _lob_heatmap(output: Path) -> None:
         ax.xaxis_date()
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S", tz=mdates.UTC))
         plotted.append(mesh)
-    axes[-1].set_xlabel("Thời gian UTC · tuần validation 2026-10-05")
-    fig.suptitle("LOB heatmap · bid/ask top-10 · dữ liệu validation trước holdout", fontsize=13, weight="bold")
+    axes[-1].set_xlabel(xlabel)
+    fig.suptitle(title, fontsize=13, weight="bold")
     fig.subplots_adjust(top=0.90, bottom=0.13, left=0.10, right=0.89, hspace=0.32)
     colorbar_axis = fig.add_axes([0.92, 0.18, 0.018, 0.68])
     fig.colorbar(plotted[-1], cax=colorbar_axis, label="log(1 + khối lượng tại mức giá)")
-    fig.savefig(output / "lob_heatmap_validation.png", dpi=180)
+    fig.savefig(output / filename, dpi=180)
     plt.close(fig)
 
 
-def _obi_forward_return_figure(output: Path) -> None:
+def _obi_forward_return_figure(output: Path, frames: dict[str, pd.DataFrame] | None = None, *,
+                               filename: str = "obi_vs_forward_return_validation.png",
+                               title: str = "OBI L10 và lợi suất mid-price tương lai · mô tả trên tuần validation") -> dict[str, dict]:
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.6), sharey=True)
+    summary: dict[str, dict] = {}
     for ax, symbol in zip(axes, SYMBOLS):
-        frame = _read_validation(symbol)
+        frame = frames[symbol] if frames is not None else _read_validation(symbol)
         frame = frame.loc[frame["book_valid"] & frame["obi_qty_10"].notna() & frame["mid_price"].notna()].copy()
         future = frame[["timestamp_utc", "mid_price", "book_valid"]].copy()
         future["timestamp_utc"] -= pd.to_timedelta(PRIMARY_HORIZON, unit="s")
@@ -271,6 +283,8 @@ def _obi_forward_return_figure(output: Path) -> None:
             raise RuntimeError(f"Too few paired validation observations for {symbol} OBI plot")
         joined["obi_decile"] = pd.qcut(joined["obi_qty_10"], 10, labels=False, duplicates="drop")
         grouped = joined.groupby("obi_decile")["forward_return_bps"].agg(["mean", "median", "count"])
+        summary[symbol] = {"n": int(len(joined)), "spearman": float(joined["obi_qty_10"].corr(joined["forward_return_bps"], method="spearman")),
+                           "decile_mean_bps": [float(v) for v in grouped["mean"]], "decile_median_bps": [float(v) for v in grouped["median"]]}
         x = grouped.index.to_numpy(dtype=float) + 1
         ax.plot(x, grouped["mean"], marker="o", color=DATA, label="Trung bình")
         ax.plot(x, grouped["median"], marker="s", color=BREACH, linewidth=1, label="Trung vị")
@@ -281,11 +295,12 @@ def _obi_forward_return_figure(output: Path) -> None:
         ax.grid(alpha=0.2)
         ax.legend(fontsize=8)
     axes[0].set_ylabel("Mid-price forward return (bps)")
-    fig.suptitle("OBI L10 và lợi suất mid-price tương lai · mô tả trên tuần validation", fontsize=13, weight="bold")
-    fig.text(0.5, 0.01, "Decile được xác định trên validation; không có dải tin cậy vì chuỗi 1 giây tự tương quan mạnh.", ha="center", fontsize=8)
+    fig.suptitle(title, fontsize=13, weight="bold")
+    fig.text(0.5, 0.01, "Decile được xác định trên chính mẫu mô tả; không có dải tin cậy vì chuỗi 1 giây tự tương quan mạnh.", ha="center", fontsize=8)
     fig.tight_layout(rect=(0, 0.04, 1, 0.92))
-    fig.savefig(output / "obi_vs_forward_return_validation.png", dpi=180)
+    fig.savefig(output / filename, dpi=180)
     plt.close(fig)
+    return summary
 
 
 def _deeplob_comparison(output: Path, predictions_path: Path, metrics_path: Path) -> bool:

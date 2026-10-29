@@ -26,7 +26,7 @@ from app.data.cryptohft_replay import OneSecondBookReplay
 
 
 ZSTD_MAGIC = bytes.fromhex("28b52ffd")
-MAX_PROVIDER_RECEIVE_TIME_REGRESSION_NS = 100_000_000
+MAX_PROVIDER_RECEIVE_TIME_REGRESSION_NS = 500_000_000
 # Provider messages that cannot be turned into book events are skipped, never silently:
 # every skip is counted by reason and printed at the end of each symbol.
 SKIPPED_EVENTS: Counter = Counter()
@@ -272,6 +272,7 @@ def _write_day(
         "date_utc": day,
         "coverage": float(valid / expected) if expected else None,
         "source_rows_validated": True,
+        "book_reconstruction": "warm_start_approximate" if qa.get("warm_start_bootstraps") else "provider_snapshot_exact",
         "event_schema": "cryptohftdata_binance_spot_l2_trades.v1",
         "source": "CryptoHFTData Binance Spot public archive",
         "timestamp_basis": "provider received_time, converted from nanoseconds to UTC milliseconds",
@@ -301,8 +302,15 @@ def _replay_symbol(
     manifest_root: Path,
     tick_size: float,
     max_event_age: int,
+    warm_start_seconds: int | None = None,
+    ignore_snapshots: bool = False,
+    restage_interval_seconds: int | None = None,
 ) -> int:
-    replay = OneSecondBookReplay(symbol, tick_size, max_event_age_seconds=max_event_age, levels=20)
+    replay = OneSecondBookReplay(
+        symbol, tick_size, max_event_age_seconds=max_event_age, levels=20,
+        warm_start_seconds=warm_start_seconds, ignore_snapshots=ignore_snapshots,
+        restage_interval_seconds=restage_interval_seconds,
+    )
     buffered_day: str | None = None
     buffered_rows: list[dict] = []
     written_days: set[str] = set()
@@ -399,7 +407,18 @@ def main() -> int:
     parser.add_argument("--output-root", type=Path, help="Defaults to the project's replay grid directory")
     parser.add_argument("--manifest-root", type=Path, help="Defaults to outputs/manifests")
     parser.add_argument("--max-event-age-seconds", type=int, default=2)
+    parser.add_argument(
+        "--warm-start-seconds", type=int,
+        help="APPROXIMATE mode for archive hours without provider snapshots: build the book from depth updates "
+             "only and emit rows after this many seconds. Always write to a separate --output-root.",
+    )
+    parser.add_argument("--ignore-snapshots", action="store_true", help="validation only: ignore provider snapshots (needs --warm-start-seconds)")
+    parser.add_argument("--restage-interval-seconds", type=int, help="validation only: drop the book every N seconds (needs --warm-start-seconds)")
     args = parser.parse_args()
+    if args.warm_start_seconds is None and (args.ignore_snapshots or args.restage_interval_seconds):
+        raise SystemExit("--ignore-snapshots/--restage-interval-seconds require --warm-start-seconds")
+    if args.warm_start_seconds is not None and args.output_root is None:
+        raise SystemExit("--warm-start-seconds requires an explicit --output-root so approximate rows never enter the exact grid")
     if args.end_date < args.start_date:
         raise SystemExit("--end-date must be on or after --start-date")
     settings_path = args.settings if args.settings.is_absolute() else REPOSITORY_ROOT / args.settings
@@ -421,6 +440,7 @@ def main() -> int:
         total_valid += _replay_symbol(
             symbol, args.start_date, args.end_date, input_root, output_root,
             manifest_root, settings.tick_size_for(symbol), args.max_event_age_seconds,
+            args.warm_start_seconds, args.ignore_snapshots, args.restage_interval_seconds,
         )
     if not total_valid:
         print("No valid L2 seconds were reconstructed. Check archive coverage and checkpoint snapshots.")

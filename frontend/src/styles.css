@@ -109,11 +109,17 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
 .research-page { padding: 34px 0 10px; }
 .research-intro { max-width: 760px; padding: 10px 0 24px; }
 .research-intro h1 { margin: 12px 0 8px; font: 700 clamp(25px, 3vw, 36px)/1.2 var(--mono); }
-.research-intro p { color: var(--mute); font: 12px/1.7 var(--mono); }
+.research-intro p { color: var(--mute); font: 13px/1.7 var(--mono); }
 .research-boundary { display: grid; grid-template-columns: 190px 1fr; gap: 20px; padding: 12px 0; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
 .research-boundary strong { font: 700 12px var(--mono); }
-.research-boundary p, .research-footnote { color: var(--mute); font: 11px/1.65 var(--mono); }
+.research-boundary p { color: var(--ink); font: 13px/1.7 var(--mono); }
+.research-footnote { color: var(--mute); font: 11px/1.65 var(--mono); }
 .research-answers { margin-top: 28px; }
+.research-glossary { margin-top: 28px; }
+.research-glossary dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 24px; margin: 0; }
+.research-glossary dl > div { padding: 10px 0; border-bottom: 1px solid var(--rule); }
+.research-glossary dt { font: 700 12px/1.5 var(--mono); }
+.research-glossary dd { margin: 3px 0 0; color: var(--mute); font: 12px/1.65 var(--mono); }
 .research-answers-head { padding: 0 0 12px; border-bottom: 1px solid var(--rule); }
 .research-answers-head h2 { margin: 7px 0 5px; font: 700 18px/1.35 var(--mono); }
 .research-answers-head p { color: var(--mute); font: 11px/1.65 var(--mono); }
@@ -121,19 +127,19 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
 .research-answer { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 14px; min-width: 0; padding: 14px 0; border-bottom: 1px solid var(--rule); }
 .research-answer-meta { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; }
 .research-answer-id { font: 700 14px/1.2 var(--mono); }
-.research-answer-status { font: 700 8px/1.5 var(--mono); letter-spacing: .04em; }
+.research-answer-status { font: 700 10px/1.5 var(--mono); letter-spacing: .04em; }
 .research-answer-status.mixed, .research-answer-status.limited { color: var(--breach); }
 .research-answer-status.partial { color: var(--data); }
 .research-answer-status.negative { color: var(--ink); }
-.research-answer-body h3 { margin: 0 0 7px; font: 700 11px/1.55 var(--mono); }
-.research-answer-body p { font: 10px/1.65 var(--mono); overflow-wrap: anywhere; }
+.research-answer-body h3 { margin: 0 0 7px; font: 700 13px/1.55 var(--mono); }
+.research-answer-body p { font: 12px/1.7 var(--mono); overflow-wrap: anywhere; }
 .research-answer-conclusion { margin-bottom: 7px; color: var(--ink); }
 .research-answer-evidence { color: var(--mute); }
 .research-answer-evidence strong { color: var(--ink); }
 .research-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 24px; margin-top: 16px; border-top: 1px solid var(--rule); }
 .research-card { min-width: 0; padding: 16px 0 14px; border-bottom: 1px solid var(--rule); }
 .research-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; min-height: 58px; }
-.research-card-head h2 { margin: 4px 0 12px; font: 700 12px/1.5 var(--mono); }
+.research-card-head h2 { margin: 4px 0 12px; font: 700 14px/1.5 var(--mono); }
 .research-card-head a { flex: 0 0 auto; color: var(--data); font-size: 10px; text-decoration: none; }
 .research-card-head a:hover { text-decoration: underline; }
 .research-image { display: grid; min-height: 190px; place-items: center; overflow: hidden; background: var(--surface); }
@@ -141,7 +147,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
 .research-analysis { margin-top: 10px; border-top: 1px solid var(--rule); }
 .research-analysis > div { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--rule); }
 .research-analysis .lbl { padding-top: 1px; font-size: 9px; }
-.research-analysis p { color: var(--ink); font: 10px/1.6 var(--mono); overflow-wrap: anywhere; }
+.research-analysis p { color: var(--ink); font: 12px/1.7 var(--mono); overflow-wrap: anywhere; }
 .research-footnote { margin: 18px 0 0; }
 
 @media (max-width: 1000px) {
@@ -157,6 +163,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
   .top .mu { width: 100%; }
   .research-grid { grid-template-columns: 1fr; }
   .research-answer-list { grid-template-columns: 1fr; }
+  .research-glossary dl { grid-template-columns: 1fr; }
   .research-answer { grid-template-columns: 104px minmax(0, 1fr); gap: 10px; }
   .research-boundary { grid-template-columns: 1fr; gap: 6px; }
   .research-card-head { min-height: auto; }

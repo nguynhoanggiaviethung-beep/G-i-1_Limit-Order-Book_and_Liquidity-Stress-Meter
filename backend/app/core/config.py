@@ -79,6 +79,9 @@ class Settings:
     lob_feature_lookback_seconds: int = 300
     lob_deeplob_lookback_seconds: int = 100
     lob_deeplob_max_train_rows: int = 8000
+    # Runtime model artifacts and the evaluation summary served by the API.
+    lob_artifact_dir: Path = REPOSITORY_ROOT / "backend" / "artifacts" / "meter"
+    lob_evaluation_dir: Path = REPOSITORY_ROOT / "outputs" / "tables" / "historical_archive_pilot"
 
     def impact_notional_for(self, symbol: str) -> float:
         return float((self.lob_stress_impact_notional_by_symbol or {}).get(symbol.upper(), self.lob_stress_impact_notional_usdt))
@@ -159,8 +162,9 @@ class Settings:
             raise ValueError("lob.first_validation_week_utc must be a Monday at 00:00 UTC")
         if test_start.tz_convert("UTC").weekday() != 0 or test_start.tz_convert("UTC").time().isoformat() != "00:00:00":
             raise ValueError("lob.untouched_test_start_utc must be a Monday at 00:00 UTC")
-        if test_end.tz_convert("UTC") - test_start.tz_convert("UTC") != timedelta(days=7) - timedelta(seconds=1):
-            raise ValueError("The untouched test window must be exactly one full UTC week")
+        test_span = test_end.tz_convert("UTC") - test_start.tz_convert("UTC") + timedelta(seconds=1)
+        if test_span < timedelta(days=7) or test_span % timedelta(days=7):
+            raise ValueError("The untouched test window must cover one or more full UTC weeks")
         if development_end.tz_convert("UTC") != test_start.tz_convert("UTC") - timedelta(seconds=1):
             raise ValueError("lob.development_end_utc must end immediately before the untouched test week")
         if first_validation_week.tz_convert("UTC") >= development_end.tz_convert("UTC"):
@@ -197,6 +201,12 @@ def load_settings(path: Path | str | None = None) -> Settings:
     interim_data_dir = Path(data.get("interim_directory", "data_interim/binance_spot"))
     if not interim_data_dir.is_absolute():
         interim_data_dir = REPOSITORY_ROOT / interim_data_dir
+    artifact_dir = Path(lob.get("artifact_directory", "backend/artifacts/meter"))
+    if not artifact_dir.is_absolute():
+        artifact_dir = REPOSITORY_ROOT / artifact_dir
+    evaluation_dir = Path(lob.get("evaluation_directory", "outputs/tables/historical_archive_pilot"))
+    if not evaluation_dir.is_absolute():
+        evaluation_dir = REPOSITORY_ROOT / evaluation_dir
     return Settings(
         symbols=symbols,
         data_dir=data_dir,
@@ -269,4 +279,6 @@ def load_settings(path: Path | str | None = None) -> Settings:
         lob_feature_lookback_seconds=int(lob.get("feature_lookback_seconds", 300)),
         lob_deeplob_lookback_seconds=int(lob.get("deeplob_lookback_seconds", 100)),
         lob_deeplob_max_train_rows=int(lob.get("deeplob_max_train_rows", 8000)),
+        lob_artifact_dir=artifact_dir,
+        lob_evaluation_dir=evaluation_dir,
     )

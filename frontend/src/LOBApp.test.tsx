@@ -137,6 +137,17 @@ describe("LOBApp stress decision threshold", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
+  it("explains the research page in plain language, with a glossary before the answers", () => {
+    render(<LOBApp />);
+    fireEvent.click(screen.getByRole("button", { name: "nghiên cứu" }));
+    expect(screen.getByRole("heading", { name: "Giải thích thuật ngữ" })).toBeInTheDocument();
+    for (const term of ["OBI", "OFI", "Persistence", "MCC", "PR-AUC"]) {
+      expect(screen.getByText(term)).toBeInTheDocument();
+    }
+    expect(screen.getAllByText("Con số cụ thể:")).toHaveLength(5);
+    expect(screen.getAllByText("cách đọc hình")).toHaveLength(7);
+  });
+
   it("opens a continuous live stream by default and renders its newest update", async () => {
     render(<LOBApp />);
     await waitFor(() => expect(eventSources.length).toBeGreaterThan(0));

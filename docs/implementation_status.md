@@ -1,6 +1,24 @@
 # Implementation and evidence status
 
-Statuses distinguish code presence from verification with real data. `data-verified` refers only to the completed historical archive pilot unless stated otherwise.
+Statuses distinguish code presence from verification with real data.
+
+## Six-month study (main evidence)
+
+| Plan step | Implementation | Evidence | Status and boundary |
+|---|---|---|---|
+| 1. Protocol and grid | `config/settings_6m.yaml`, `build_unified_6m_grid.py` | `outputs/manifests/unified_6m/grid_sources.csv` | Frozen 2026-10-27; development is mostly warm-start books, the test uses exact books only |
+| 2. Features | `build_lob_classification_dataset.py`, `recompute_impact_features.py` | impact backups in `data_processed/cryptohftdata_6m_unified/impact_backup/` | 2,000 USDT impact notional chosen by a training-only coverage rule before the test was opened |
+| 3. Labels | `app/labels/` | stress prevalence by month in each `classification_metrics.json` | Composite stress inside the 2–10% guard on development and test |
+| 4. Walk-forward | `run_lob_classification.py --development-only` | `outputs/tables/walk_forward_6m/` | 12 expanding weekly folds, 300 s embargo, 250k rows per fit |
+| 5. RQ1/RQ2 ablations and HAC | `build_walk_forward_tables.py`, `run_lob_econometrics.py` | `walk_forward_6m/*.csv`, `outputs/tables/econometrics_6m/` | Development only |
+| 6. DeepLOB and latency | `run_deeplob_validation.py` | `outputs/deeplob_6m/`, runtime profiles in the metrics JSON | DeepLOB on development only; it lost and was not scored on the test |
+| 7. Regimes, bootstrap and paired tests | `run_lob_regime_bootstrap.py` | `outputs/tables/regime_bootstrap_6m/` | Development only |
+| 8. Untouched test | `run_lob_classification.py` (final mode), `run_lob_test_regime_bootstrap.py` | `outputs/tables/final_test_6m/` (markers, metrics, per-second predictions, `regime_bootstrap/`) | Scored once per symbol on 2026-10-28; later analyses read saved predictions only |
+| 9. Product and docs | `replay_service.py`, `config/settings_live.yaml`, `LOBApp.tsx`, `build_six_month_figures.py`, `build_six_month_report_tables.py` | `/api/v1/models`, `/api/v1/evaluation/{symbol}`, research page, `outputs/research_figures_6m/`, `outputs/tables/report_6m/` | The API serves `backend/artifacts/meter_6m` and refuses artifacts whose training impact notional differs from runtime. API predictions match the research pipeline exactly on development rows |
+
+## Archive pilot (2026-10-26 submission)
+
+`data-verified` in this section refers only to the completed historical archive pilot.
 
 | Plan requirement | Implementation | Test / evidence | Status and boundary |
 |---|---|---|---|

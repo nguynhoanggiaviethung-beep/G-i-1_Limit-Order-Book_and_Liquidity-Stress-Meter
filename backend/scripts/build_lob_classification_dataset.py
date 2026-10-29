@@ -19,6 +19,11 @@ from app.features.classification_features import build_classification_features
 def build_partition_features(raw_frame: pd.DataFrame, previous_tail: pd.DataFrame, date: str, symbol: str, settings, impact_override: float | None = None):
     """Build daily output with enough preceding rows to warm every rolling feature."""
     warmup_rows = settings.lob_feature_lookback_seconds + 1
+    if "book_source" not in raw_frame:
+        # Exact replays predate the warm-start columns; label them so every partition shares one schema.
+        raw_frame = raw_frame.assign(book_source="snapshot", book_age_seconds=float("nan"))
+    # Keep only today's columns so a partition's schema never depends on earlier days.
+    previous_tail = previous_tail.reindex(columns=raw_frame.columns) if not previous_tail.empty else previous_tail
     frame = pd.concat([previous_tail, raw_frame], ignore_index=True) if not previous_tail.empty else raw_frame.copy()
     impact_notional = impact_override if impact_override is not None else settings.impact_notional_for(symbol)
     features = build_classification_features(frame, impact_notional, settings.tick_size_for(symbol))
@@ -34,6 +39,7 @@ def main() -> int:
     parser.add_argument("--settings", type=Path, default=REPOSITORY_ROOT / "config" / "settings_live.yaml", help="Settings file that selects the source grid and feature policy")
     parser.add_argument("--symbol", choices=("BTCUSDT", "ETHUSDT"), help="Build only one configured symbol")
     parser.add_argument("--impact-notional-usdt", type=float)
+    parser.add_argument("--start-date", help="Resume at this YYYY-MM-DD; the preceding day only seeds the rolling-window warm-up")
     args = parser.parse_args()
     settings_path = args.settings if args.settings.is_absolute() else REPOSITORY_ROOT / args.settings
     settings = load_settings(settings_path)
@@ -43,7 +49,14 @@ def main() -> int:
     found = 0
     for symbol in symbols:
         previous_tail = pd.DataFrame()
-        for source in store._files(symbol):
+        sources = store._files(symbol)
+        if args.start_date:
+            first = next((index for index, path in enumerate(sources) if (store._date_from_path(path) or "") >= args.start_date), len(sources))
+            if first > 0:
+                # Same tail a full run would carry: the warm-up rows end at the previous day's last row.
+                previous_tail = pd.read_parquet(sources[first - 1]).tail(settings.lob_feature_lookback_seconds + 1).copy()
+            sources = sources[first:]
+        for source in sources:
             raw_frame = pd.read_parquet(source)
             date = store._date_from_path(source) or "unknown"
             features, previous_tail = build_partition_features(raw_frame, previous_tail, date, symbol, settings, args.impact_notional_usdt)

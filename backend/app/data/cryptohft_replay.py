@@ -74,9 +74,34 @@ def normalize_event(record: dict[str, Any]) -> dict[str, Any]:
 class OneSecondBookReplay:
     """Stateful sequence-checked event replay with exact 1-second sampling."""
 
-    def __init__(self, symbol: str, tick_size: float, max_event_age_seconds: int = 2, levels: int = 20) -> None:
+    def __init__(
+        self,
+        symbol: str,
+        tick_size: float,
+        max_event_age_seconds: int = 2,
+        levels: int = 20,
+        warm_start_seconds: int | None = None,
+        ignore_snapshots: bool = False,
+        restage_interval_seconds: int | None = None,
+    ) -> None:
         if tick_size <= 0 or max_event_age_seconds < 0 or levels < 1:
             raise ValueError("tick_size and levels must be positive and max_event_age_seconds non-negative")
+        if warm_start_seconds is not None and warm_start_seconds < 0:
+            raise ValueError("warm_start_seconds must be non-negative")
+        if restage_interval_seconds is not None and restage_interval_seconds < 1:
+            raise ValueError("restage_interval_seconds must be positive")
+        if (ignore_snapshots or restage_interval_seconds) and warm_start_seconds is None:
+            raise ValueError("ignore_snapshots and restage_interval_seconds are validation options of warm-start mode")
+        # Warm-start mode (APPROXIMATE): with no provider snapshot, build the book only from the
+        # depth updates seen since staging began. The result is a subset of the true book (levels that
+        # were never touched are missing), so it is never mixed with exact snapshot-based grids.
+        self.warm_start_seconds = warm_start_seconds
+        self.ignore_snapshots = bool(ignore_snapshots)
+        self.restage_interval_seconds = restage_interval_seconds
+        self._stage: dict[str, Any] | None = None
+        self._book_start_ms: int | None = None
+        self._book_source = "snapshot"
+        self._had_book = False
         self.symbol = symbol.upper()
         self.tick_size = float(tick_size)
         self.max_event_age_ms = int(max_event_age_seconds * 1000)
@@ -126,6 +151,8 @@ class OneSecondBookReplay:
         event = normalize_event(raw_record)
         if event.get("symbol") and event["symbol"] != self.symbol:
             raise ValueError(f"Event symbol {event['symbol']} does not match replay symbol {self.symbol}")
+        if self.ignore_snapshots and event["kind"] == "snapshot":
+            return
         timestamp = event["event_time_ms"]
         provider_lateness_ms = float(event.get("provider_receive_time_regression_ms") or 0.0)
         if provider_lateness_ms > 0:
@@ -162,12 +189,18 @@ class OneSecondBookReplay:
         elif second < self.current_second:
             raise ValueError("Event time moved behind the replay sampling cursor")
         elif second > self.current_second:
+            previous_second = self.current_second
             for completed_second in range(self.current_second, second):
                 row = self._sample(completed_second)
                 if row is not None:
                     yield row
                 self._reset_bucket()
             self.current_second = second
+            if self.restage_interval_seconds and (
+                previous_second // self.restage_interval_seconds != second // self.restage_interval_seconds
+            ):
+                self.book = None
+                self._stage = None
 
         if event["kind"] == "snapshot":
             self._install_snapshot(event)
@@ -201,6 +234,10 @@ class OneSecondBookReplay:
         exchange_time = event.get("exchange_event_time_ms")
         self.book.transaction_time_ms = int(exchange_time) if exchange_time is not None else None
         self.book.received_at_utc = event.get("received_at_utc")
+        self._stage = None
+        self._book_start_ms = int(event.get("book_event_time_ms", event["event_time_ms"]))
+        self._book_source = "snapshot"
+        self._had_book = True
         if not self._snapshot_seen:
             self.qa["snapshot_bootstraps"] += 1
             self._daily_counter(timestamp_ms=event["event_time_ms"])["snapshot_bootstraps"] += 1
@@ -234,8 +271,71 @@ class OneSecondBookReplay:
                 deletions += float(-difference)
         return additions, deletions
 
+    def _stage_update(self, event: dict[str, Any]) -> None:
+        """Accumulate depth updates while no snapshot-based book exists (warm-start mode)."""
+        try:
+            first_id, final_id = int(event["U"]), int(event["u"])
+            event_ms = int(event["event_time_ms"])
+        except (KeyError, TypeError, ValueError):
+            return
+        stage = self._stage
+        if stage is not None and final_id <= stage["last_id"]:
+            return
+        if stage is not None and first_id > stage["last_id"] + 1:
+            # Missing updates while warming up: the staged book is unreliable, start over.
+            self.qa["sequence_gap_count"] += 1
+            self._daily_counter(self.current_second)["sequence_gap_count"] += 1
+            self.last_gap_second = self.current_second
+            stage = self._stage = None
+        if stage is None:
+            stage = self._stage = {"bids": {}, "asks": {}, "last_id": first_id - 1, "start_ms": event_ms}
+        try:
+            LocalOrderBook._apply_side(stage["bids"], event.get("b", []), None)
+            LocalOrderBook._apply_side(stage["asks"], event.get("a", []), None)
+        except (InvalidBook, KeyError, TypeError, ValueError):
+            self.qa["invalid_book_event_count"] += 1
+            self._daily_counter(self.current_second)["invalid_book_event_count"] += 1
+            self._stage = None
+            return
+        stage["last_id"] = final_id
+        if event_ms - stage["start_ms"] >= int(self.warm_start_seconds * 1000) and stage["bids"] and stage["asks"]:
+            self._install_staged(event, event_ms)
+
+    def _install_staged(self, event: dict[str, Any], event_ms: int) -> None:
+        stage = self._stage
+        book = LocalOrderBook(
+            symbol=self.symbol,
+            bids=dict(stage["bids"]),
+            asks=dict(stage["asks"]),
+            last_update_id=stage["last_id"],
+            valid=True,
+            invalid_reason=None,
+        )
+        try:
+            book.validate()
+        except InvalidBook:
+            self.qa["invalid_book_event_count"] += 1
+            self._daily_counter(self.current_second)["invalid_book_event_count"] += 1
+            self._stage = None
+            return
+        book.event_time_ms = event_ms
+        exchange_time = event.get("exchange_event_time_ms")
+        book.transaction_time_ms = int(exchange_time) if exchange_time is not None else None
+        self.book = book
+        self._book_start_ms = int(stage["start_ms"])
+        self._book_source = "warm_start"
+        self._stage = None
+        daily = self._daily_counter(timestamp_ms=event_ms)
+        self.qa["warm_start_bootstraps"] = self.qa.get("warm_start_bootstraps", 0) + 1
+        daily["warm_start_bootstraps"] = daily.get("warm_start_bootstraps", 0) + 1
+        if self._had_book:
+            self.recovered_second = self.current_second
+        self._had_book = True
+
     def _apply_depth_update(self, event: dict[str, Any]) -> None:
         if self.book is None or not self.book.valid:
+            if self.warm_start_seconds is not None:
+                self._stage_update(event)
             return
         try:
             previous = {
@@ -368,6 +468,11 @@ class OneSecondBookReplay:
             "tick_size": self.tick_size,
             "qa_flags": [],
         }
+        if self.warm_start_seconds is not None:
+            row["book_source"] = self._book_source
+            row["book_age_seconds"] = (
+                (sample_time_ms - self._book_start_ms) / 1000.0 if self._book_start_ms is not None else None
+            )
         for side, levels in (("bid", bid_levels), ("ask", ask_levels)):
             for index in range(self.levels):
                 price, quantity = levels[index] if index < len(levels) else (None, None)

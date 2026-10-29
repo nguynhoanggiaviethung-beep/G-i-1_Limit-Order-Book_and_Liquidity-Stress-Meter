@@ -8,6 +8,9 @@ Ví dụ:
     python run_6m_local.py
     python run_6m_local.py --start 2026-05-01 --end 2026-05-10 --workers 1
     python run_6m_local.py --skip-download      # chỉ replay, dùng file raw đã có
+    python run_6m_local.py --skip-download --warm-start-seconds 900
+        # Dùng file CHƯA có snapshot (trước 24/8): dựng book XẤP XỈ từ bản cập nhật, ghi vào grid riêng
+        # data_processed/cryptohftdata_6m_warm. Chỉ dùng sau khi validate_warm_start.py cho thấy sai số chấp nhận được.
 """
 
 from __future__ import annotations
@@ -29,6 +32,8 @@ SYMBOLS = ("BTCUSDT", "ETHUSDT")
 DEFAULT_START = "2026-04-19"
 DEFAULT_END = "2026-10-18"
 DEFAULT_WORKERS = 2  # mỗi luồng replay dùng vài GB RAM; 2 luồng là an toàn với máy 16 GB
+
+WARM_START_SECONDS: int | None = None  # bật bằng --warm-start-seconds; grid xấp xỉ luôn ghi vào thư mục riêng
 
 # Ép UTF-8 cho tiến trình con để đường dẫn có dấu (vd. "Gói 1") và log không gây UnicodeError trên Windows.
 CHILD_ENV = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
@@ -96,7 +101,8 @@ def replay_chunk(index: int, total: int, start: str, end: str) -> tuple[bool, st
         [sys.executable, "backend/scripts/replay_cryptohftdata_archive.py",
          "--start-date", start, "--end-date", end,
          "--output-root", str(GRID_ROOT),
-         "--manifest-root", str(MANIFEST_ROOT / f"part_{start}_{end}")],
+         "--manifest-root", str(MANIFEST_ROOT / f"part_{start}_{end}")]
+        + (["--warm-start-seconds", str(WARM_START_SECONDS)] if WARM_START_SECONDS is not None else []),
         log_path,
     )
     if code == 0:
@@ -108,6 +114,7 @@ def replay_chunk(index: int, total: int, start: str, end: str) -> tuple[bool, st
 
 
 def main() -> int:
+    global GRID_ROOT, MANIFEST_ROOT, WARM_START_SECONDS
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -116,9 +123,20 @@ def main() -> int:
     parser.add_argument("--days", type=int, default=2, help="số ngày mỗi đợt")
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help="số luồng replay song song")
     parser.add_argument("--skip-download", action="store_true", help="không tải, chỉ replay file raw đã có")
+    parser.add_argument(
+        "--warm-start-seconds", type=int,
+        help="XẤP XỈ: dựng book từ bản cập nhật khi file không có snapshot; trích sau N giây. Ghi vào grid riêng.",
+    )
     args = parser.parse_args()
     if args.end < args.start or args.days < 1 or args.workers < 1:
         raise SystemExit("--end phải >= --start; --days và --workers phải >= 1")
+    if args.warm_start_seconds is not None:
+        if args.warm_start_seconds < 0:
+            raise SystemExit("--warm-start-seconds phải >= 0")
+        WARM_START_SECONDS = args.warm_start_seconds
+        GRID_ROOT = ROOT / "data_processed" / "cryptohftdata_6m_warm" / "grid"
+        MANIFEST_ROOT = ROOT / "outputs" / "manifests" / "archive_6m_warm"
+        print(f"CHẾ ĐỘ XẤP XỈ (warm-start {WARM_START_SECONDS}s): ghi vào {GRID_ROOT}", flush=True)
 
     chunks = make_chunks(args.start, args.end, args.days)
     total = len(chunks)

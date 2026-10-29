@@ -115,6 +115,18 @@ def build_classification_features(
         frame[f"depth_notional_{depth}"] = frame[f"bid_depth_notional_{depth}"] + frame[f"ask_depth_notional_{depth}"]
         frame[f"obi_qty_{depth}"] = np.divide(bid_depth - ask_depth, total, out=np.full_like(total, np.nan), where=total > 0)
 
+    # Depth slope: resting notional per basis point of distance from mid out to level 20.
+    # A steep (large) slope means a deep, resilient side; a flat one means thin liquidity.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        bid_distance_bps = (mid - bp[:, 19]) / mid * 10000.0
+        ask_distance_bps = (ap[:, 19] - mid) / mid * 10000.0
+    bid_slope = np.divide(frame["bid_depth_notional_20"].to_numpy(), bid_distance_bps, out=np.full_like(mid, np.nan), where=bid_distance_bps > 0)
+    ask_slope = np.divide(frame["ask_depth_notional_20"].to_numpy(), ask_distance_bps, out=np.full_like(mid, np.nan), where=ask_distance_bps > 0)
+    frame["bid_depth_slope_20"] = bid_slope
+    frame["ask_depth_slope_20"] = ask_slope
+    slope_total = bid_slope + ask_slope
+    frame["depth_slope_imbalance_20"] = np.divide(bid_slope - ask_slope, slope_total, out=np.full_like(mid, np.nan), where=slope_total > 0)
+
     frame["impact_buy_bps"] = _impact(ap, aq, mid, impact_notional_usdt, buy=True)
     frame["impact_sell_bps"] = _impact(bp, bq, mid, impact_notional_usdt, buy=False)
     both_sides_filled = frame["impact_buy_bps"].notna() & frame["impact_sell_bps"].notna()

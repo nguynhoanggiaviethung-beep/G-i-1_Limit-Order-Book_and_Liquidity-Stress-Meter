@@ -73,7 +73,7 @@ Per-day QA sidecars are read from `outputs/manifests/symbol=<SYMBOL>/date=YYYY-M
 | `trade_imbalance_5s`, `trade_imbalance_10s` | `(buy_volume - sell_volume) / total_volume` in trailing windows. |
 | `addition_intensity_1s`, `cancellation_intensity_1s`, `addition_intensity_5s`, `cancellation_intensity_5s` | Displayed quantity added/depleted from event updates. Cancellation is a proxy because public depth events do not expose order IDs. |
 | `impact_buy_bps`, `impact_sell_bps` | Adverse VWAP impact for a fixed USDT notional swept through visible asks/bids. |
-| `price_impact_bps` | Maximum of both buy and sell adverse impact; missing if either side cannot fill the configured notional. Defaults: 250,000 USDT BTCUSDT and 100,000 USDT ETHUSDT. |
+| `price_impact_bps` | Maximum of both buy and sell adverse impact; missing if either side cannot fill the configured notional. Pilot: 250,000 USDT BTCUSDT and 100,000 USDT ETHUSDT. Six-month study: 2,000 USDT for both, chosen so that both sides fill in ≥ 99% of training seconds (see methodology). |
 | `rv_10s`, `rv_60s`, `rv_300s` | Trailing sum of squared one-second mid-price log returns. |
 
 All rolling windows reset at gaps. Every scaler, imputer, and threshold is fitted on training data only.

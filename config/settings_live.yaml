@@ -43,16 +43,21 @@ lob:
   spread_sensitivity_quantile: 0.95
   stress_min_positive_rate: 0.02
   stress_max_positive_rate: 0.10
+  # Must match the notional the served artifacts were trained with (config/settings_6m.yaml);
+  # the API refuses an artifact whose training notional differs.
   stress_impact_notional_by_symbol:
-    BTCUSDT: 250000
-    ETHUSDT: 100000
+    BTCUSDT: 2000
+    ETHUSDT: 2000
   tick_size_by_symbol:
     BTCUSDT: 0.01
     ETHUSDT: 0.01
   max_missing_feature_fraction: 0.10
   max_staleness_seconds: 2
-  # Runtime-only compatibility values. The submission study split lives in
-  # config/settings.yaml and is evaluated from data_processed/cryptohftdata_pilot.
+  # Models served by the API: the six-month study, scored once on 2026-08-24 to 2026-09-27.
+  artifact_directory: backend/artifacts/meter_6m
+  evaluation_directory: outputs/tables/final_test_6m
+  # Runtime-only compatibility values. The research splits live in config/settings_6m.yaml
+  # (six-month study) and config/settings.yaml (October pilot).
   first_validation_week_utc: "2026-10-05T00:00:00Z"
   development_end_utc: "2026-10-11T23:59:59Z"
   untouched_test_start_utc: "2026-10-12T00:00:00Z"

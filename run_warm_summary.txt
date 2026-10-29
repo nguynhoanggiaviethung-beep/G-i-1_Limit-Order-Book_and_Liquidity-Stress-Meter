@@ -1,0 +1,7 @@
+﻿CHẾ ĐỘ XẤP XỈ (warm-start 300s): ghi vào D:\Gói 1\G-i-1_Limit-Order-Book_and_Liquidity-Stress-Meter\data_processed\cryptohftdata_6m_warm\grid
+=== CÒN 1 ĐỢT CẦN XỬ LÝ (đợt đã xong được bỏ qua tự động) ===
+[Replay 1/1] bắt đầu: 2026-05-25 -> 2026-05-26
+[Replay 1/1] HOÀN TẤT: 2026-05-25 -> 2026-05-26
+
+HOÀN TẤT 2026-04-19 -> 2026-08-23: grid ở D:\Gói 1\G-i-1_Limit-Order-Book_and_Liquidity-Stress-Meter\data_processed\cryptohftdata_6m_warm\grid
+=== exit 0 ===

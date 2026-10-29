@@ -1,0 +1,10 @@
+﻿date        symbol    coverage    valid  expected  gaps
+2026-04-24  BTCUSDT      98.2%   84,809    86,400     4
+2026-04-24  ETHUSDT      98.2%   84,809    86,400     4
+2026-05-24  BTCUSDT      98.7%   85,269    86,400     3
+2026-05-24  ETHUSDT      98.7%   85,269    86,400     3
+2026-06-12  BTCUSDT      98.6%   85,210    86,399     2
+2026-06-12  ETHUSDT      98.6%   85,210    86,399     2
+
+254 ngày-symbol, 6 dòng in ra. Tổng độ phủ: 99.7%
+Đã ghi D:\Gói 1\G-i-1_Limit-Order-Book_and_Liquidity-Stress-Meter\data_interim\cryptohftdata_6m\coverage_report.csv

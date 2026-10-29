@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,28 @@ def _number(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return result if np.isfinite(result) else None
+
+
+def _training_impact_notional(bundle: dict[str, Any], symbol: str) -> float | None:
+    """Impact notional the artifact was trained with, read from its own training configuration.
+
+    Returns None when it cannot be verified: no configuration recorded, the file is missing, or
+    its SHA-256 no longer matches the one stored at training time.
+    """
+    if bundle.get("impact_notional_usdt") is not None:
+        return _number(bundle["impact_notional_usdt"])
+    reproducibility = bundle.get("reproducibility") or {}
+    configuration_file = reproducibility.get("configuration_file")
+    if not configuration_file:
+        return None
+    path = Path(configuration_file)
+    path = path if path.is_absolute() else REPOSITORY_ROOT / path
+    if not path.is_file():
+        return None
+    expected = reproducibility.get("configuration_sha256")
+    if expected and hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+        return None
+    return load_settings(path).impact_notional_for(symbol)
 
 
 def _utc_timestamp(value: str | pd.Timestamp) -> pd.Timestamp:
@@ -76,14 +99,16 @@ class ReplayService:
     ) -> None:
         self.store = store or GridStore()
         self.feature_store = GridStore(self.store.root.parent / "features")
-        self.artifact_root = Path(artifact_root) if artifact_root else REPOSITORY_ROOT / "backend" / "artifacts" / "meter"
         settings = load_settings()
+        self.artifact_root = Path(artifact_root) if artifact_root else settings.lob_artifact_dir
+        self.evaluation_root = settings.lob_evaluation_dir
         self.max_staleness_seconds = settings.lob_max_staleness_seconds if max_staleness_seconds is None else max_staleness_seconds
         self.max_missing_feature_fraction = settings.lob_max_missing_feature_fraction if max_missing_feature_fraction is None else max_missing_feature_fraction
         self.impact_notionals = settings.lob_stress_impact_notional_by_symbol or {}
         self.tick_sizes = settings.lob_tick_size_by_symbol or {}
         self.default_impact_notional = settings.lob_stress_impact_notional_usdt if impact_notional_usdt is None else impact_notional_usdt
         self._bundles: dict[tuple[str, int], dict[str, Any] | None] = {}
+        self._bundle_reasons: dict[tuple[str, int], str] = {}
 
     def data_status(self, symbols: tuple[str, ...]) -> dict[str, Any]:
         return self.store.catalog(symbols)
@@ -159,6 +184,16 @@ class ReplayService:
                     or bundle.get("stress_model") is None
                 ):
                     bundle = None
+                if bundle is not None:
+                    # price_impact_bps is a model feature, so runtime must sweep the same notional as training.
+                    trained = _training_impact_notional(bundle, key[0])
+                    runtime = float(self.impact_notionals.get(key[0], self.default_impact_notional))
+                    if trained is not None and not np.isclose(trained, runtime):
+                        self._bundle_reasons[key] = (
+                            f"The model was trained with a {trained:,.0f} USDT impact notional, "
+                            f"but the runtime configuration uses {runtime:,.0f} USDT"
+                        )
+                        bundle = None
                 self._bundles[key] = bundle
             except Exception:
                 self._bundles[key] = None
@@ -218,7 +253,8 @@ class ReplayService:
             "model_version": bundle.get("model_version") if bundle is not None else None,
         }
         if bundle is None:
-            return {**base, "status": "unavailable", "reason": "No trained artifact is available for this symbol and horizon"}
+            reason = self._bundle_reasons.get((symbol.upper(), int(horizon_seconds)), "No trained artifact is available for this symbol and horizon")
+            return {**base, "status": "unavailable", "reason": reason}
         if not book_valid:
             return {**base, "status": "unavailable", "reason": "The supplied order book is invalid"}
         if missing_fraction > self.max_missing_feature_fraction:
@@ -307,7 +343,10 @@ class ReplayService:
             }
         impact_notional = float(self.impact_notionals.get(symbol.upper(), self.default_impact_notional))
         derived = compute_microstructure_features(row, impact_notional, self.tick_sizes.get(symbol.upper()))
-        features = {**derived, **row}
+        # Impact always comes from the runtime notional, which the artifact check matched to training;
+        # a feature partition built under an older notional must not leak into the model input.
+        impact = {key: derived.get(key) for key in ("impact_buy_bps", "impact_sell_bps", "price_impact_bps")}
+        features = {**derived, **row, **impact}
         return self.predict_features(
             symbol, row.get("timestamp_utc"), horizon_seconds, features,
             {"book_valid": _truthy(row.get("book_valid"), True), "seconds_since_gap": row.get("seconds_since_gap"), "snapshot_age_seconds": snapshot_age},
@@ -321,15 +360,16 @@ class ReplayService:
                 if path.is_file():
                     bundle = self._bundle(symbol, horizon)
                     if bundle is not None:
-                        items.append({"symbol": symbol, "horizon_seconds": horizon, "status": "ready", "model_version": bundle.get("model_version"), "metrics": bundle.get("metrics"), "trained_at_utc": bundle.get("trained_at_utc")})
+                        items.append({"symbol": symbol, "horizon_seconds": horizon, "status": "ready", "model_version": bundle.get("model_version"), "study_label": bundle.get("study_label"), "metrics": bundle.get("metrics"), "trained_at_utc": bundle.get("trained_at_utc")})
                     else:
-                        items.append({"symbol": symbol, "horizon_seconds": horizon, "status": "unavailable", "reason": "The model artifact is invalid or incompatible"})
+                        reason = self._bundle_reasons.get((symbol.upper(), int(horizon)), "The model artifact is invalid or incompatible")
+                        items.append({"symbol": symbol, "horizon_seconds": horizon, "status": "unavailable", "reason": reason})
                 else:
                     items.append({"symbol": symbol, "horizon_seconds": horizon, "status": "unavailable", "reason": "Model artifact is not present"})
         return {"schema": "models.v1", "status": "ready" if any(item["status"] == "ready" for item in items) else "unavailable", "models": items}
 
     def evaluation(self, symbol: str) -> dict[str, Any]:
-        path = REPOSITORY_ROOT / "outputs" / "tables" / symbol / "classification_metrics.json"
+        path = self.evaluation_root / symbol / "classification_metrics.json"
         if not path.is_file():
             return {"schema": "evaluation.v1", "symbol": symbol, "status": "unavailable", "reason": "No out-of-sample classification results are available"}
         return {"schema": "evaluation.v1", "symbol": symbol, "status": "ready", "results": json.loads(path.read_text(encoding="utf-8"))}

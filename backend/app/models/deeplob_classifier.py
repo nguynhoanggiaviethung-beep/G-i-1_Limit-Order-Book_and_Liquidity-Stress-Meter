@@ -25,16 +25,20 @@ def build_lob_sequences(
     missing = [column for column in columns if column not in frame]
     if missing:
         raise ValueError(f"DeepLOB input is missing book columns: {', '.join(missing[:4])}")
-    values = frame.loc[:, columns].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=np.float32)
-    times = pd.to_datetime(frame["timestamp_utc"], utc=True, errors="coerce").astype("int64").to_numpy()
-    valid = frame.get("book_valid", pd.Series(True, index=frame.index)).fillna(False).astype(bool).to_numpy()
+    endpoints = np.asarray(endpoints, dtype=int)
+    endpoints = endpoints[(endpoints - lookback + 1 >= 0) & (endpoints < len(frame))]
+    if not len(endpoints):
+        return np.empty((0, lookback, len(columns)), dtype=np.float32), np.asarray([], dtype=int)
+    # Convert only the rows inside some window, not the whole (possibly months-long) frame.
+    rows, positions = np.unique(endpoints[:, None] + np.arange(-lookback + 1, 1), return_inverse=True)
+    positions = positions.reshape(len(endpoints), lookback)
+    subset = frame.iloc[rows]
+    values = subset.loc[:, columns].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=np.float32)
+    times = pd.to_datetime(subset["timestamp_utc"], utc=True, errors="coerce").astype("int64").to_numpy()
+    valid = subset.get("book_valid", pd.Series(True, index=subset.index)).fillna(False).astype(bool).to_numpy()
     selected_values, selected_endpoints = [], []
     second_ns = 1_000_000_000
-    for endpoint in np.asarray(endpoints, dtype=int):
-        start = endpoint - lookback + 1
-        if start < 0 or endpoint >= len(frame):
-            continue
-        segment = slice(start, endpoint + 1)
+    for endpoint, segment in zip(endpoints, positions):
         if not valid[segment].all() or not np.all(np.diff(times[segment]) == second_ns):
             continue
         window = values[segment]

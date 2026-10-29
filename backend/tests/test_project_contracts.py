@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import sys
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ import pandas as pd
 import pytest
 from sklearn.isotonic import IsotonicRegression
 
+from app.core.config import REPOSITORY_ROOT, load_settings
 from app.evaluation.lob_classification import classification_metrics
 from app.data.grid_store import GridStore
 from app.features.classification_features import build_classification_features
@@ -354,6 +356,50 @@ def test_artifact_loader_requires_matching_target_and_schema_metadata(tmp_path):
     joblib.dump(incompatible, path)
     service = ReplayService(artifact_root=tmp_path)
     assert service._bundle("BTCUSDT", 5) is None
+
+
+def test_artifact_loader_refuses_a_training_impact_notional_that_differs_from_runtime(tmp_path):
+    training_config = tmp_path / "settings_train.yaml"
+    training_config.write_text("lob:\n  stress_impact_notional_by_symbol:\n    BTCUSDT: 2000\n", encoding="utf-8")
+    path = tmp_path / "artifacts" / "BTCUSDT" / "horizon_5.joblib"
+    path.parent.mkdir(parents=True)
+    metadata = {
+        "symbol": "BTCUSDT", "horizon_seconds": 5,
+        "feature_columns": list(LOB_CLASSIFICATION_FEATURES),
+        "feature_schema_version": LOB_CLASSIFICATION_FEATURE_SCHEMA_VERSION,
+        "label_schema_versions": {"direction": DIRECTION_LABEL_SCHEMA_VERSION, "stress": STRESS_LABEL_SCHEMA_VERSION},
+        "direction_model": {"fixture": "direction"}, "stress_model": {"fixture": "stress"},
+        "reproducibility": {
+            "configuration_file": str(training_config),
+            "configuration_sha256": hashlib.sha256(training_config.read_bytes()).hexdigest(),
+        },
+    }
+    joblib.dump(metadata, path)
+    service = ReplayService(artifact_root=path.parents[1])
+    service.impact_notionals = {"BTCUSDT": 250000.0}
+    assert service._bundle("BTCUSDT", 5) is None
+    response = service.predict_features("BTCUSDT", None, 5, {})
+    assert "2,000 USDT" in response["reason"] and "250,000 USDT" in response["reason"]
+    assert "2,000 USDT" in service.models(("BTCUSDT",), (5,))["models"][0]["reason"]
+
+    service = ReplayService(artifact_root=path.parents[1])
+    service.impact_notionals = {"BTCUSDT": 2000.0}
+    assert service._bundle("BTCUSDT", 5) is not None
+
+    # An edited training configuration can no longer vouch for the artifact; the check is skipped.
+    training_config.write_text("lob:\n  stress_impact_notional_by_symbol:\n    BTCUSDT: 9999\n", encoding="utf-8")
+    service = ReplayService(artifact_root=path.parents[1])
+    service.impact_notionals = {"BTCUSDT": 250000.0}
+    assert service._bundle("BTCUSDT", 5) is not None
+
+
+def test_live_settings_serve_six_month_artifacts_with_their_training_notional():
+    live = load_settings(REPOSITORY_ROOT / "config" / "settings_live.yaml")
+    study = load_settings(REPOSITORY_ROOT / "config" / "settings_6m.yaml")
+    assert live.lob_artifact_dir == REPOSITORY_ROOT / "backend" / "artifacts" / "meter_6m"
+    assert live.lob_evaluation_dir == REPOSITORY_ROOT / "outputs" / "tables" / "final_test_6m"
+    for symbol in live.symbols:
+        assert live.impact_notional_for(symbol) == study.impact_notional_for(symbol)
 
 
 def test_api_rejects_artifact_for_another_symbol(tmp_path):

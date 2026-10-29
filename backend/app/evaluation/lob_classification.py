@@ -7,15 +7,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import (
-    accuracy_score,
-    balanced_accuracy_score,
-    confusion_matrix,
-    f1_score,
-    matthews_corrcoef,
-    precision_recall_fscore_support,
-    average_precision_score,
-)
+from sklearn.metrics import average_precision_score
 from scipy.stats import binomtest, norm
 
 
@@ -136,23 +128,61 @@ def paired_classification_tests(
     }
 
 
+def _encode_pair(y_true, y_pred, labels: list) -> tuple[np.ndarray, np.ndarray, int]:
+    """Map labels to integer codes; codes 0..len(labels)-1 follow ``labels``, unlisted values follow."""
+    truth, predicted = np.asarray(y_true), np.asarray(y_pred)
+    index = pd.Index(labels)
+    truth_codes, predicted_codes = index.get_indexer(truth), index.get_indexer(predicted)
+    size = len(labels)
+    if (truth_codes < 0).any() or (predicted_codes < 0).any():
+        extras = pd.Index(pd.unique(np.concatenate([truth[truth_codes < 0], predicted[predicted_codes < 0]])))
+        truth_codes = np.where(truth_codes < 0, size + extras.get_indexer(truth), truth_codes)
+        predicted_codes = np.where(predicted_codes < 0, size + extras.get_indexer(predicted), predicted_codes)
+        size += len(extras)
+    return truth_codes, predicted_codes, size
+
+
+def _label_metrics(y_true, y_pred, labels: list) -> tuple[dict[str, Any], np.ndarray]:
+    """Return the sklearn label metrics, derived from one integer confusion matrix.
+
+    Equivalent to ``accuracy_score``, ``f1_score(average="macro", zero_division=0)``,
+    ``balanced_accuracy_score``, ``matthews_corrcoef`` and ``precision_recall_fscore_support``,
+    without re-encoding object labels in every call.
+    """
+    truth_codes, predicted_codes, size = _encode_pair(y_true, y_pred, labels)
+    full = np.bincount(truth_codes * size + predicted_codes, minlength=size * size).reshape(size, size)
+    listed = len(labels)
+    true_sum, pred_sum, true_positive = full.sum(axis=1), full.sum(axis=0), np.diag(full)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        precision = np.where(pred_sum[:listed] > 0, true_positive[:listed] / pred_sum[:listed], 0.0)
+        recall = np.where(true_sum[:listed] > 0, true_positive[:listed] / true_sum[:listed], 0.0)
+        f_denominator = true_sum[:listed] + pred_sum[:listed]
+        f1 = np.where(f_denominator > 0, 2 * true_positive[:listed] / f_denominator, 0.0)
+        per_class = true_positive / true_sum
+    per_class = per_class[~np.isnan(per_class)]
+    t_sum, p_sum = true_sum.astype(np.float64), pred_sum.astype(np.float64)
+    n_correct, n_samples = np.trace(full, dtype=np.float64), p_sum.sum()
+    cov_ytyp = n_correct * n_samples - np.dot(t_sum, p_sum)
+    cov_ypyp_ytyt = (n_samples**2 - np.dot(p_sum, p_sum)) * (n_samples**2 - np.dot(t_sum, t_sum))
+    distinct_predictions = int(np.count_nonzero(pred_sum))
+    metrics = {
+        "n": int(len(truth_codes)),
+        "accuracy": float(n_correct / n_samples) if n_samples else float("nan"),
+        "macro_f1": float(np.mean(f1)),
+        "balanced_accuracy": float(np.mean(per_class)),
+        "mcc": float(cov_ytyp / np.sqrt(cov_ypyp_ytyt)) if distinct_predictions > 1 and cov_ypyp_ytyt != 0 else 0.0,
+        "precision_by_class": {str(label): float(value) for label, value in zip(labels, precision)},
+        "recall_by_class": {str(label): float(value) for label, value in zip(labels, recall)},
+        "confusion_matrix": full[:listed, :listed].tolist(),
+        "labels": [str(label) for label in labels],
+    }
+    return metrics, truth_codes
+
+
 def classification_metrics(y_true, y_pred, probabilities=None, labels=None, stress: bool = False) -> dict[str, Any]:
     """Compute imbalance-aware metrics without using accuracy as the selector."""
     labels = list(labels or sorted(set(y_true)))
-    precision, recall, _, _ = precision_recall_fscore_support(
-        y_true, y_pred, labels=labels, average=None, zero_division=0
-    )
-    result: dict[str, Any] = {
-        "n": int(len(y_true)),
-        "accuracy": float(accuracy_score(y_true, y_pred)),
-        "macro_f1": float(f1_score(y_true, y_pred, labels=labels, average="macro", zero_division=0)),
-        "balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
-        "mcc": float(matthews_corrcoef(y_true, y_pred)) if len(set(y_pred)) > 1 else 0.0,
-        "precision_by_class": {str(label): float(value) for label, value in zip(labels, precision)},
-        "recall_by_class": {str(label): float(value) for label, value in zip(labels, recall)},
-        "confusion_matrix": confusion_matrix(y_true, y_pred, labels=labels).tolist(),
-        "labels": [str(label) for label in labels],
-    }
+    result, truth_codes = _label_metrics(y_true, y_pred, labels)
     if stress:
         positives = (np.asarray(y_true) == 1).astype(int)
         result["positive_rate"] = float(positives.mean()) if len(positives) else None
@@ -169,10 +199,9 @@ def classification_metrics(y_true, y_pred, probabilities=None, labels=None, stre
                 result["ece"] = _expected_calibration_error(positive, scores)
         else:
             target = np.zeros_like(p)
-            label_positions = {label: index for index, label in enumerate(labels)}
-            for row, label in enumerate(y_true):
-                if label in label_positions and label_positions[label] < p.shape[1]:
-                    target[row, label_positions[label]] = 1.0
+            # Codes below len(labels) are listed labels, in order; others get no target column.
+            hit = (truth_codes < len(labels)) & (truth_codes < p.shape[1])
+            target[np.flatnonzero(hit), truth_codes[hit]] = 1.0
             result["brier"] = float(np.mean(np.sum((p - target) ** 2, axis=1)))
             result["calibration_by_class"] = {
                 str(label): _calibration_bins(target[:, index], p[:, index])

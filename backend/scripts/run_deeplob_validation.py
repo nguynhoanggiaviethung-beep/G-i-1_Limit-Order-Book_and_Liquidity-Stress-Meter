@@ -21,13 +21,16 @@ from app.core.config import REPOSITORY_ROOT, load_settings
 from app.evaluation.lob_classification import classification_metrics, expanding_week_folds
 from app.labels.direction import fit_direction_delta, make_direction_labels
 from app.labels.stress import fit_primary_stress_thresholds, make_stress_labels
-from app.models.deeplob_classifier import DeepLOBClassifier, build_lob_sequences
+from app.models.deeplob_classifier import DEEPLOB_INPUT_COLUMNS, DeepLOBClassifier, build_lob_sequences
 from app.models.lob_classifiers import LOB_CLASSIFICATION_FEATURES, make_classifiers
 from scripts.run_lob_classification import (
     DIRECTION_CLASSES,
     STRESS_CLASSES,
     _align_probabilities,
+    _load_features,
+    _partition_date,
     _stress_threshold_rows,
+    _threshold_frame,
 )
 
 
@@ -35,24 +38,15 @@ DEFAULT_VALIDATION_ROWS = 2500
 
 
 def _load_pretest_features(symbol: str, settings, test_start: pd.Timestamp) -> pd.DataFrame:
-    root = settings.data_dir / "features"
-    paths = sorted(root.rglob("features_1s.parquet"))
-    selected = []
-    for path in paths:
-        if f"symbol={symbol}" not in path.parts:
-            continue
-        date_parts = [part.removeprefix("date=") for part in path.parts if part.startswith("date=")]
-        if not date_parts:
+    """Load the classical run columns plus the raw top-10 book; no partition on or after the test start is opened.
+
+    The book columns are read as float32, the dtype ``build_lob_sequences`` converts them to anyway.
+    """
+    for path in sorted((settings.data_dir / "features").rglob("features_1s.parquet")):
+        if f"symbol={symbol}" in path.parts and _partition_date(path) is None:
             raise RuntimeError(f"Refusing to load unpartitioned feature file without a date key: {path}")
-        if pd.Timestamp(date_parts[-1], tz="UTC") < test_start:
-            selected.append(path)
-    if not selected:
-        raise FileNotFoundError(f"No pre-test feature partitions found for {symbol} under {root}")
-    frame = pd.concat((pd.read_parquet(path) for path in selected), ignore_index=True)
-    frame["timestamp_utc"] = pd.to_datetime(frame["timestamp_utc"], utc=True, errors="coerce")
-    frame = frame.dropna(subset=["timestamp_utc"])
-    frame = frame.loc[frame["timestamp_utc"] < test_start]
-    return frame.sort_values("timestamp_utc", kind="mergesort").drop_duplicates("timestamp_utc", keep="last").reset_index(drop=True)
+    frame = _load_features(symbol, settings, end_exclusive=test_start, extra_columns=DEEPLOB_INPUT_COLUMNS)
+    return frame.loc[frame["timestamp_utc"] < test_start].reset_index(drop=True)
 
 
 def _aligned_deep_probabilities(model, x: np.ndarray, class_order: tuple[object, ...]) -> np.ndarray:
@@ -209,7 +203,7 @@ def run_validation(settings, symbols: tuple[str, ...], horizon: int, validation_
             all_predictions.append(direction_predictions)
 
             thresholds = fit_primary_stress_thresholds(
-                _stress_threshold_rows(frame, times < cutoff, settings.lob_stress_definition),
+                _stress_threshold_rows(_threshold_frame(frame), times < cutoff, settings.lob_stress_definition),
                 settings.lob_stress_definition,
                 settings.lob_stress_quantile,
                 settings.lob_stress_depth_quantile,
@@ -241,6 +235,8 @@ def main() -> int:
     parser.add_argument("--symbol", choices=("BTCUSDT", "ETHUSDT"))
     parser.add_argument("--horizon", type=int, choices=(1, 5, 10))
     parser.add_argument("--validation-max-rows", type=int, default=DEFAULT_VALIDATION_ROWS)
+    parser.add_argument("--out-dir", type=Path, default=REPOSITORY_ROOT / "outputs" / "deeplob", help="Keep each study's outputs in its own directory")
+    parser.add_argument("--study-label", default="historical_archive_pilot")
     args = parser.parse_args()
     if args.validation_max_rows < 30:
         parser.error("--validation-max-rows must be at least 30")
@@ -249,14 +245,15 @@ def main() -> int:
     symbols = (args.symbol,) if args.symbol else settings.symbols
     horizon = args.horizon or settings.lob_primary_horizon_seconds
     metrics, predictions = run_validation(settings, symbols, horizon, args.validation_max_rows)
-    out_dir = REPOSITORY_ROOT / "outputs" / "deeplob"
+    out_dir = args.out_dir if args.out_dir.is_absolute() else REPOSITORY_ROOT / args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = out_dir / f"validation_metrics_h{horizon}.json"
     predictions_path = out_dir / f"validation_predictions_h{horizon}.csv"
     metrics_path.write_text(json.dumps({
         "schema": "deeplob_validation.v1",
         "status": "completed_development_validation_only",
-        "study_label": "historical_archive_pilot",
+        "study_label": args.study_label,
+        "configuration_file": settings_path.relative_to(REPOSITORY_ROOT).as_posix(),
         "holdout_scored": False,
         "holdout_accessed": False,
         "comparison_models": ["deeplob", "logistic", "xgboost"],
@@ -274,7 +271,7 @@ def main() -> int:
         "do_not_run_against_holdout": True,
         "configured_train_cap": int(settings.lob_deeplob_max_train_rows),
         "horizon_seconds": horizon,
-        "note": "Validation evidence only; the historical pilot final holdout remains scored exactly once by the classical-model run.",
+        "note": "Validation evidence only; no partition on or after the untouched-test start was opened.",
     }, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"Metrics: {metrics_path}", flush=True)
     print(f"Pointwise validation predictions: {predictions_path}", flush=True)

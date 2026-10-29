@@ -56,3 +56,11 @@ def test_book_microstructure_and_vector_features_share_the_same_formulas():
     assert isclose(float(row_features["price_impact_bps"]), float(vector["price_impact_bps"]))
     assert "bid_top_level_share_20" in canonical
     assert "bid_depth_concentration_20" not in canonical
+
+    # Mid 101; level-20 bid 81 and ask 121 are both 20/101 of mid away.
+    distance_bps = 20 / 101 * 10000
+    bid_notional = sum(float(p) * float(q) for p, q in bids)
+    ask_notional = sum(float(p) * float(q) for p, q in asks)
+    assert isclose(float(vector["bid_depth_slope_20"]), bid_notional / distance_bps)
+    assert isclose(float(vector["ask_depth_slope_20"]), ask_notional / distance_bps)
+    assert isclose(float(vector["depth_slope_imbalance_20"]), (bid_notional - ask_notional) / (bid_notional + ask_notional))
